@@ -24,32 +24,40 @@ Optional companions:
 From the project root:
 
 ```bash
-python3 -m pip install --target .venv -r requirements.txt
+python3 setup.py
+```
+
+That is the first-run installer (not setuptools — package metadata is in `pyproject.toml`). It:
+
+- installs PySide6 into `.venv`
+- writes the app-menu launcher and login autostart entry for **this checkout**
+- writes the grid icon
+- installs udev rules (sudo) so the Stream Deck works without root
+
+Unplug and replug the deck after udev. Close the official Elgato software first.
+
+Then:
+
+```bash
 python3 run.py
 ```
 
-Start hidden in the tray (used by autostart):
+Or open **PopStream** from the app menu. After login it starts hidden in the tray. A second launch raises the existing window. Closing the window can minimize to the tray so the deck keeps working.
+
+Skip hardware rules if you only want the editor:
 
 ```bash
-python3 run.py --tray
+python3 setup.py --no-udev
 ```
 
-A second launch raises the existing window. Closing the window can minimize to the tray so the deck keeps working.
-
-### Hardware access
-
-Install the udev rules so your user can open the Stream Deck without root:
+`--no-autostart` skips the login entry. Manual udev, if you prefer:
 
 ```bash
 sudo cp udev/99-popstream-streamdeck.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-Unplug and replug the deck after that. Supported layouts include Mini, Original, Original V2, MK.2, XL, Plus, Neo, and Pedal. Virtual decks stay in the device list so you can design for a model you do not have plugged in.
-
-### Desktop launcher
-
-`packaging/popstream` launches `run.py`. Copy the `.desktop` files from `packaging/` into `~/.local/share/applications/` and `~/.config/autostart/` (edit the `Exec` and `Path` lines to match this checkout). The autostart entry uses `--tray` and a short delay so it comes up after login.
+Supported layouts include Mini, Original, Original V2, MK.2, XL, Plus, Neo, and Pedal. Virtual decks stay in the device list so you can design for a model you do not have plugged in.
 
 ## Use
 
