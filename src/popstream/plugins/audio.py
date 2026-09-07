@@ -160,17 +160,22 @@ def default_source() -> str:
 
 
 def pick_live_name(kind: str, wanted: str) -> str:
-    """Map a stored Pulse name onto the live Analog/Pro node for that card."""
+    """Map a stored Pulse name onto the live Analog node for that card."""
     if not wanted:
         return ""
     items = list_sinks() if kind == "sink" else list_sources()
-    for name, _desc in items:
-        if name == wanted:
-            return name
-    for name, _desc in items:
-        if same_card(name, wanted):
-            return name
-    return wanted
+    names = [name for name, _desc in items]
+    if wanted in names:
+        return wanted
+    same = [name for name in names if same_card(name, wanted)]
+    if not same:
+        return wanted
+    analog = [
+        name
+        for name in same
+        if ".analog-" in name or "mono-fallback" in name or ".mono-" in name
+    ]
+    return analog[0] if analog else same[0]
 
 
 def _pretty(name: str, items: list[tuple[str, str]]) -> str:
