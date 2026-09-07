@@ -1,0 +1,17 @@
+[project]
+name = "popstream"
+version = "0.1.0"
+description = "Qt Stream Deck clone with a plugin host for hardware and actions"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PySide6>=6.5"]
+
+[project.scripts]
+popstream = "popstream.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

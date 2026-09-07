@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PopStream
+Comment=Control your Stream Deck
+Exec=/home/owner/Desktop/Projects/popstream/packaging/popstream
+Path=/home/owner/Desktop/Projects/popstream
+Icon=/home/owner/.local/share/icons/hicolor/128x128/apps/popstream.png
+Terminal=false
+Categories=Utility;Settings;
+StartupNotify=false
+StartupWMClass=popstream
+X-GNOME-Autostart-enabled=true

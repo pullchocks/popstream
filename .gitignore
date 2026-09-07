@@ -1,0 +1,15 @@
+.venv/
+.deps/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.qt/
+*.user
+.cache/
+.popstream-data/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

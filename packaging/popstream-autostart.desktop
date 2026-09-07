@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PopStream
+Comment=Keep the Stream Deck running after login
+Exec=/home/owner/Desktop/Projects/popstream/packaging/popstream --tray
+Path=/home/owner/Desktop/Projects/popstream
+Icon=/home/owner/.local/share/icons/hicolor/128x128/apps/popstream.png
+Terminal=false
+Categories=Utility;Settings;
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=3
+Hidden=false
