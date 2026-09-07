@@ -390,7 +390,7 @@ class MainWindow(QMainWindow):
         extra = self.engine.last_hardware_error
         self.banner.setText(
             f"Stream Deck found ({names}) but it could not be opened. "
-            f"Close the official Elgato software if it is running. "
+            f"Quit any other program using the deck. "
             f"{extra} "
             f"If this persists, install udev/99-popstream-streamdeck.rules and replug the deck."
         )

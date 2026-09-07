@@ -1,6 +1,6 @@
 # PopStream
 
-A Stream Deck editor for **Pop!_OS**. PopStream talks to Elgato hardware over HID, mirrors the keys on screen, and runs a plugin host for actions. Close the official Elgato software first — only one program can own the device.
+A Stream Deck editor for **Pop!_OS**. PopStream talks to Elgato hardware over HID, mirrors the keys on screen, and runs a plugin host for actions. There is no official Elgato app on Linux. Only one program can own the deck, so quit any other Stream Deck client before opening PopStream.
 
 This is not a Windows or macOS app. It is built for Pop!_OS with COSMIC: hidraw, udev, PipeWire, the session lock screen, tray, and autostart. Other Linux distros are not supported — the window might open, but audio, lock tiles, hotkeys, and the desktop integration will not behave the same.
 
@@ -34,7 +34,7 @@ That is the first-run installer (not setuptools — package metadata is in `pypr
 - writes the grid icon
 - installs udev rules (sudo) so the Stream Deck works without root
 
-Unplug and replug the deck after udev. Close the official Elgato software first.
+Unplug and replug the deck after udev.
 
 Then:
 

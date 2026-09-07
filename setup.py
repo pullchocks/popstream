@@ -137,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     print()
-    print("Done. Close official Elgato software, then:")
+    print("Done. Then:")
     print("  python3 run.py")
     print("Or open PopStream from the app menu. After login it starts in the tray.")
     return 0
