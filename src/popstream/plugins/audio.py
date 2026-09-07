@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,55 @@ def _json_list(kind: str) -> list[dict[str, Any]]:
     return data if isinstance(data, list) else []
 
 
+_ENDPOINT_TAIL = re.compile(
+    r"\.(?:analog-[^.]+|pro-(?:output|input)-\d+|hdmi-stereo(?:-\d+)?|iec958-stereo)$"
+)
+_SNAP_TTL = 0.8
+_SNAP: dict[str, Any] | None = None
+
+
+def card_key(name: str) -> str:
+    return _ENDPOINT_TAIL.sub("", name) if name else ""
+
+
+def same_card(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    a, b = card_key(left), card_key(right)
+    return bool(a and b and a == b)
+
+
+def _invalidate_snap() -> None:
+    global _SNAP
+    _SNAP = None
+
+
+def _snapshot(*, force: bool = False) -> dict[str, Any]:
+    global _SNAP
+    now = time.monotonic()
+    if not force and _SNAP is not None and now - float(_SNAP["at"]) < _SNAP_TTL:
+        return _SNAP
+    _SNAP = {
+        "at": now,
+        "sinks": _json_list("sinks"),
+        "sources": _json_list("sources"),
+        "sink_inputs": _json_list("sink-inputs"),
+        "default_sink": _pactl("get-default-sink")[1],
+        "default_source": _pactl("get-default-source")[1],
+        "alsa_cap": {},
+        "wpctl_mute": {},
+    }
+    return _SNAP
+
+
+def _live_rows(kind: str) -> list[dict[str, Any]]:
+    key = "sinks" if kind == "sink" else "sources"
+    rows = _snapshot().get(key) or []
+    return rows if isinstance(rows, list) else []
+
+
 EQFX_SINK_NAMES = {"eqfx.sink", "minieq.sink"}
 EQFX_PLAYBACK_NAMES = {"eqfx.playback", "minieq.playback"}
 EQFX_DIR = Path.home() / ".local" / "share" / "eqfx"
@@ -82,7 +132,7 @@ def _is_eqfx_sink(name: str, desc: str = "") -> bool:
 
 def list_sinks() -> list[tuple[str, str]]:
     items = []
-    for sink in _json_list("sinks"):
+    for sink in _live_rows("sink"):
         name = str(sink.get("name") or "")
         desc = str(sink.get("description") or name)
         if name and not _is_eqfx_sink(name, desc):
@@ -92,7 +142,7 @@ def list_sinks() -> list[tuple[str, str]]:
 
 def list_sources() -> list[tuple[str, str]]:
     items = []
-    for source in _json_list("sources"):
+    for source in _live_rows("source"):
         name = str(source.get("name") or "")
         if not name or name.endswith(".monitor"):
             continue
@@ -102,11 +152,25 @@ def list_sources() -> list[tuple[str, str]]:
 
 
 def default_sink() -> str:
-    return _pactl("get-default-sink")[1]
+    return str(_snapshot().get("default_sink") or "")
 
 
 def default_source() -> str:
-    return _pactl("get-default-source")[1]
+    return str(_snapshot().get("default_source") or "")
+
+
+def pick_live_name(kind: str, wanted: str) -> str:
+    """Map a stored Pulse name onto the live Analog/Pro node for that card."""
+    if not wanted:
+        return ""
+    items = list_sinks() if kind == "sink" else list_sources()
+    for name, _desc in items:
+        if name == wanted:
+            return name
+    for name, _desc in items:
+        if same_card(name, wanted):
+            return name
+    return wanted
 
 
 def _pretty(name: str, items: list[tuple[str, str]]) -> str:
@@ -124,7 +188,7 @@ def _short(label: str) -> str:
 
 
 def _eqfx_sink_name() -> str:
-    for sink in _json_list("sinks"):
+    for sink in _live_rows("sink"):
         name = str(sink.get("name") or "")
         desc = str(sink.get("description") or "")
         if _is_eqfx_sink(name, desc):
@@ -254,12 +318,15 @@ def set_eqfx_preset(preset_id: str) -> bool:
 
 
 def eqfx_playback_sink() -> str:
+    snap = _snapshot()
     sinks = {
         item.get("index"): str(item.get("name") or "")
-        for item in _json_list("sinks")
-        if item.get("index") is not None
+        for item in snap.get("sinks") or []
+        if isinstance(item, dict) and item.get("index") is not None
     }
-    for item in _json_list("sink-inputs"):
+    for item in snap.get("sink_inputs") or []:
+        if not isinstance(item, dict):
+            continue
         props = item.get("properties") if isinstance(item.get("properties"), dict) else {}
         node = str(props.get("node.name") or "")
         if node not in EQFX_PLAYBACK_NAMES:
@@ -286,7 +353,9 @@ def active_output_sink() -> str:
 
 def _move_eqfx_playback(hardware: str) -> bool:
     moved = False
-    for item in _json_list("sink-inputs"):
+    for item in _snapshot().get("sink_inputs") or []:
+        if not isinstance(item, dict):
+            continue
         props = item.get("properties") if isinstance(item.get("properties"), dict) else {}
         node = str(props.get("node.name") or "")
         if node not in EQFX_PLAYBACK_NAMES:
@@ -301,13 +370,16 @@ def _move_eqfx_playback(hardware: str) -> bool:
 
 
 def set_default_sink(name: str) -> bool:
+    name = pick_live_name("sink", name) or name
     eq = _eqfx_sink_name()
     if eq and name and not _is_eqfx_sink(name):
         _write_wanted_output(name)
         moved = _move_eqfx_playback(name)
         _pactl("set-default-sink", eq)
+        _invalidate_snap()
         return moved or True
     code, _ = _pactl("set-default-sink", name)
+    _invalidate_snap()
     if code != 0:
         return False
     _, rows = _pactl("list", "short", "sink-inputs")
@@ -319,7 +391,9 @@ def set_default_sink(name: str) -> bool:
 
 
 def set_default_source(name: str) -> bool:
+    name = pick_live_name("source", name) or name
     code, _ = _pactl("set-default-source", name)
+    _invalidate_snap()
     if code != 0:
         return False
     _, rows = _pactl("list", "short", "source-outputs")
@@ -331,6 +405,16 @@ def set_default_source(name: str) -> bool:
 
 
 def _volume_of(target: str) -> int:
+    entry = _find_device("sink", target)
+    if entry:
+        volume = entry.get("volume")
+        if isinstance(volume, dict):
+            for channel in volume.values():
+                if not isinstance(channel, dict):
+                    continue
+                match = re.search(r"(\d+)", str(channel.get("value_percent") or ""))
+                if match:
+                    return int(match.group(1))
     _, out = _pactl("get-sink-volume", target)
     match = re.search(r"(\d+)%", out)
     return int(match.group(1)) if match else 0
@@ -439,15 +523,23 @@ def _wpctl_muted(node_id: str) -> bool | None:
 
 
 def endpoint_muted(kind: str, name: str, entry: dict[str, Any] | None) -> bool:
-    pulse = _muted(name) if kind == "sink" else _source_muted(name)
-    if pulse:
-        return True
-    node = _node_id(entry)
-    if node and _wpctl_muted(node):
-        return True
-    if kind == "source":
-        card = _alsa_card(entry)
-        if card and _alsa_capture_muted(card) is True:
+    if entry is not None and "mute" in entry:
+        if bool(entry.get("mute")):
+            return True
+        if kind == "sink":
+            return False
+    elif name:
+        pulse = _muted(name) if kind == "sink" else _source_muted(name)
+        if pulse:
+            return True
+    if kind != "source":
+        return False
+    card = _alsa_card(entry)
+    alsa = _snapshot().setdefault("alsa_cap", {})
+    if card:
+        if card not in alsa:
+            alsa[card] = _alsa_capture_muted(card)
+        if alsa[card] is True:
             return True
     return False
 
@@ -465,6 +557,7 @@ def set_endpoint_mute(kind: str, name: str, entry: dict[str, Any] | None, muted:
         card = _alsa_card(entry)
         if card:
             _set_alsa_capture(card, muted)
+    _invalidate_snap()
     return code == 0 or endpoint_muted(kind, name, entry) is muted
 
 
@@ -502,9 +595,12 @@ def _port_available(entry: dict[str, Any]) -> bool:
 def _find_device(kind: str, name: str) -> dict[str, Any] | None:
     if not name:
         return None
-    rows = _json_list("sinks" if kind == "sink" else "sources")
+    rows = _live_rows(kind)
     for row in rows:
         if str(row.get("name") or "") == name:
+            return row
+    for row in rows:
+        if same_card(str(row.get("name") or ""), name):
             return row
     return None
 
@@ -537,11 +633,12 @@ def paint_endpoint(ctx: ActionContext, kind: str, mode: str = "switch") -> None:
     settings = ctx.settings
     target = sink_target(settings) if kind == "sink" else source_target(settings)
     items = list_sinks() if kind == "sink" else list_sources()
-    name = resolve_sink(target) if kind == "sink" else resolve_source(target)
+    chosen = str(settings.get("device") or "")
+    raw = resolve_sink(target) if kind == "sink" else resolve_source(target)
+    name = pick_live_name(kind, raw) if raw else ""
     entry = _find_device(kind, name)
     available = entry is not None and _port_available(entry)
     muted = endpoint_muted(kind, name, entry) if name else True
-    chosen = str(settings.get("device") or "")
     current = default_sink() if kind == "sink" else default_source()
 
     if not available:
@@ -558,14 +655,14 @@ def paint_endpoint(ctx: ActionContext, kind: str, mode: str = "switch") -> None:
         return
 
     selected = active_output_sink() if kind == "sink" else current
-    if mode == "switch" and chosen and chosen == selected:
+    if mode == "switch" and chosen and (chosen == selected or same_card(chosen, selected)):
         ctx.set_state("ok")
     else:
         ctx.set_state("")
     if mode == "mute" and kind != "sink":
         ctx.set_title("MIC ON")
     elif mode in {"mute", "volume"}:
-        ctx.set_title(f"{_volume_of(target)}%")
+        ctx.set_title(f"{_volume_of(name or target)}%")
     elif ctx.slot_title.strip():
         ctx.set_title(None)
     else:
@@ -573,26 +670,38 @@ def paint_endpoint(ctx: ActionContext, kind: str, mode: str = "switch") -> None:
 
 
 class _LiveAction(Action):
+    _shared: QTimer | None = None
+    _listeners: list[_LiveAction] = []
+
     def __init__(self) -> None:
-        self._timer: QTimer | None = None
         self._ctx: ActionContext | None = None
 
     def will_appear(self, ctx: ActionContext) -> None:
         self._ctx = ctx
-        if self._timer is None:
-            self._timer = QTimer()
-            self._timer.timeout.connect(self._tick)
-        self._timer.start(400)
+        if self not in _LiveAction._listeners:
+            _LiveAction._listeners.append(self)
+        if _LiveAction._shared is None:
+            _LiveAction._shared = QTimer()
+            _LiveAction._shared.timeout.connect(_LiveAction._tick_all)
+            _LiveAction._shared.start(1000)
         self._tick()
 
     def will_disappear(self, ctx: ActionContext) -> None:
-        if self._timer is not None:
-            self._timer.stop()
+        if self in _LiveAction._listeners:
+            _LiveAction._listeners.remove(self)
         self._ctx = None
+        if not _LiveAction._listeners and _LiveAction._shared is not None:
+            _LiveAction._shared.stop()
 
     def settings_did_change(self, ctx: ActionContext) -> None:
         self._ctx = ctx
         self._tick()
+
+    @classmethod
+    def _tick_all(cls) -> None:
+        _snapshot(force=True)
+        for action in list(cls._listeners):
+            action._tick()
 
     def _tick(self) -> None:
         if self._ctx is None:
@@ -626,14 +735,23 @@ class _DeviceInspector(QWidget):
         layout.addRow("", refresh)
 
     def _fill(self) -> None:
-        current = self._ctx.settings.get("device", "")
+        current = str(self._ctx.settings.get("device") or "")
         items = list_sinks() if self._kind == "sink" else list_sources()
+        live = {name for name, _desc in items}
         self.combo.blockSignals(True)
         self.combo.clear()
         self.combo.addItem("Default / current", "")
         for name, desc in items:
             self.combo.addItem(_short(desc), name)
+        if current and current not in live:
+            label = _short(str(self._ctx.settings.get("device_label") or current))
+            self.combo.addItem(f"{label}  (off)", current)
         index = self.combo.findData(current)
+        if index < 0 and current:
+            for i in range(self.combo.count()):
+                if same_card(str(self.combo.itemData(i) or ""), current):
+                    index = i
+                    break
         self.combo.setCurrentIndex(index if index >= 0 else 0)
         self.combo.blockSignals(False)
 
@@ -832,6 +950,7 @@ class SetOutputAction(_LiveAction):
             current = active_output_sink()
             nxt = names[(names.index(current) + 1) % len(names)] if current in names else names[0]
             chosen = nxt
+        chosen = pick_live_name("sink", chosen)
         if set_default_sink(chosen):
             ctx.show_ok()
         else:
@@ -858,6 +977,7 @@ class SetInputAction(_LiveAction):
             current = default_source()
             nxt = names[(names.index(current) + 1) % len(names)] if current in names else names[0]
             chosen = nxt
+        chosen = pick_live_name("source", chosen)
         if set_default_source(chosen):
             ctx.show_ok()
         else:
@@ -876,6 +996,7 @@ class VolumeUpAction(_LiveAction):
         step = int(ctx.settings.get("step", 5))
         target = sink_target(ctx.settings)
         code, _ = _pactl("set-sink-volume", target, f"+{step}%")
+        _invalidate_snap()
         if code != 0:
             ctx.show_alert()
         self.update_visual(ctx)
@@ -892,6 +1013,7 @@ class VolumeDownAction(_LiveAction):
         step = int(ctx.settings.get("step", 5))
         target = sink_target(ctx.settings)
         code, _ = _pactl("set-sink-volume", target, f"-{step}%")
+        _invalidate_snap()
         if code != 0:
             ctx.show_alert()
         self.update_visual(ctx)
@@ -908,6 +1030,7 @@ class SetVolumeAction(_LiveAction):
         level = int(ctx.settings.get("level", 50))
         target = sink_target(ctx.settings)
         code, _ = _pactl("set-sink-volume", target, f"{level}%")
+        _invalidate_snap()
         if code != 0:
             ctx.show_alert()
         self.update_visual(ctx)
