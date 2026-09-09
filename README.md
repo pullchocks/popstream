@@ -2,7 +2,7 @@
 
 A Stream Deck editor for **Linux**. PopStream talks to Elgato hardware over HID, mirrors the keys on screen, and runs a plugin host for actions. There is no official Elgato app on Linux. Only one program can own the deck, so quit any other Stream Deck client before opening PopStream.
 
-This is not a Windows or macOS app. It was developed on Pop!_OS, but it is **not Pop!_OS-only** — it runs on typical Linux desktops that have:
+This is not a Windows or macOS app. It was developed on Pop!_OS, but it is **not Pop!_OS-only**. It runs on typical Linux desktops that have:
 
 - Python 3.10+ and PySide6
 - `hidraw` access via udev (installer writes the rules)
@@ -13,18 +13,20 @@ Lock-screen tiles and some desktop integrations work best where logind or a Scre
 
 ## Requirements
 
+Install these on the host first. `setup.py` installs PySide6 into `.venv`; it does **not** install Python for you.
+
 - Linux (see above)
-- Python 3.10+
-- [PySide6](https://pypi.org/project/PySide6/) 6.5+
+- **Python 3.10+** (`python3 --version`), from your distro packages
+- [PySide6](https://pypi.org/project/PySide6/) 6.5+ (pulled into `.venv` by setup)
 
 Optional companions:
 
-- [`pactl`](https://www.freedesktop.org/wiki/Software/PulseAudio/) — output / input / mute / volume
-- [`playerctl`](https://github.com/altdesktop/playerctl) — play / pause / skip
-- [`upower`](https://upower.freedesktop.org/) — wireless device battery
-- **Bloop** — soundboard keys (must be running)
-- **Cliamp** — music player keys (must be running)
-- **eqFX** — EQ preset keys
+- [`pactl`](https://www.freedesktop.org/wiki/Software/PulseAudio/): output / input / mute / volume
+- [`playerctl`](https://github.com/altdesktop/playerctl): play / pause / skip
+- [`upower`](https://upower.freedesktop.org/): wireless device battery
+- **Bloop**: soundboard keys (must be running)
+- **Cliamp**: music player keys (must be running)
+- **eqFX**: EQ preset keys
 
 ## Install
 
@@ -34,7 +36,7 @@ From the project root:
 python3 setup.py
 ```
 
-That is the first-run installer (not setuptools — package metadata is in `pyproject.toml`). It:
+That is the first-run installer (not setuptools; package metadata is in `pyproject.toml`). It:
 
 - installs PySide6 into `.venv`
 - writes the app-menu launcher and login autostart entry for **this checkout**
@@ -49,7 +51,7 @@ Then:
 python3 run.py
 ```
 
-Or open **PopStream** from the app menu. After login it starts hidden in the tray — look for the tray icon (Hyprland/Omarchy: top bar), or launch again to raise the window. Closing the window can minimize to the tray so the deck keeps working.
+Or open **PopStream** from the app menu. After login it starts hidden in the tray. Look for the tray icon (Hyprland/Omarchy: top bar), or launch again to raise the window. Closing the window can minimize to the tray so the deck keeps working.
 
 Skip hardware rules if you only want the editor:
 
@@ -69,7 +71,7 @@ Supported layouts include Mini, Original, Original V2, MK.2, XL, Plus, Neo, and 
 ## Use
 
 - **Click a key** to select it and edit it in the inspector.
-- **Drag an action** from the left catalog onto a key. Click an action first to set its options, then drag — those settings apply on drop.
+- **Drag an action** from the left catalog onto a key. Click an action first to set its options, then drag. Those settings apply on drop.
 - **Double-click a key** (or press Space) to run the action. Presses on the physical deck always run.
 - **Drag keys** onto each other to swap them.
 - Pages sit under the canvas. Folders open a nested page; Back returns.
