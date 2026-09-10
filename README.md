@@ -2,12 +2,12 @@
 
 A Stream Deck editor for **Linux**. PopStream talks to Elgato hardware over HID, mirrors the keys on screen, and runs a plugin host for actions. There is no official Elgato app on Linux. Only one program can own the deck, so quit any other Stream Deck client before opening PopStream.
 
-This is not a Windows or macOS app. It was developed on Pop!_OS, but it is **not Pop!_OS-only**. It runs on typical Linux desktops that have:
+Needs a typical Linux desktop with:
 
 - Python 3.10+ and PySide6
 - `hidraw` access via udev (installer writes the rules)
 - PipeWire or PulseAudio (`pactl`) for the Audio actions
-- A freedesktop tray / StatusNotifier host (GNOME, COSMIC, KDE, Hyprland/Omarchy, and similar)
+- A freedesktop tray / StatusNotifier host (GNOME, COSMIC, KDE, Hyprland, and similar)
 
 Lock-screen tiles and some desktop integrations work best where logind or a ScreenSaver D-Bus API is available; elsewhere those features degrade gracefully.
 
