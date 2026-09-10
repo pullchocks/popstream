@@ -81,6 +81,8 @@ Supported layouts include Mini, Original, Original V2, MK.2, XL, Plus, Neo, and 
 
 Mute, missing devices, and the active **Set Output** / **Set Input** show on the icon (red or green). The key background stays as you set it.
 
+**Set Output** with eqFX remembers each hardware sink’s volume (and mute) in `~/.local/share/eqfx/device_volumes.json` and restores it on switch. Volume keys also target the active hardware sink when eqFX is the default.
+
 ## Built-in actions
 
 | Group | Actions |

@@ -121,6 +121,7 @@ EQFX_SINK_NAMES = {"eqfx.sink", "minieq.sink"}
 EQFX_PLAYBACK_NAMES = {"eqfx.playback", "minieq.playback"}
 EQFX_DIR = Path.home() / ".local" / "share" / "eqfx"
 WANTED_OUTPUT_PATH = EQFX_DIR / "wanted-output"
+DEVICE_VOLUMES_PATH = EQFX_DIR / "device_volumes.json"
 WANTED_PRESET_PATH = EQFX_DIR / "wanted-preset"
 EQFX_SETTINGS_PATH = EQFX_DIR / "settings.json"
 
@@ -382,6 +383,14 @@ def set_default_sink(name: str) -> bool:
     name = pick_live_name("sink", name) or name
     eq = _eqfx_sink_name()
     if eq and name and not _is_eqfx_sink(name):
+        leaving = active_output_sink()
+        leaving_vol = None
+        if leaving and leaving != name:
+            leaving_vol = _volume_of(leaving)
+            _remember_hw_volume(leaving)
+        if not _restore_hw_volume(name) and leaving_vol is not None:
+            _pactl("set-sink-volume", name, f"{leaving_vol}%")
+            _remember_hw_volume(name)
         _write_wanted_output(name)
         moved = _move_eqfx_playback(name)
         _pactl("set-default-sink", eq)
@@ -673,8 +682,62 @@ def _find_device(kind: str, name: str) -> dict[str, Any] | None:
 
 def resolve_sink(target: str) -> str:
     if not target or target == "@DEFAULT_SINK@":
-        return default_sink()
+        current = default_sink()
+        # While eqFX owns the default sink, volume keys should hit the hardware
+        # destination apps are actually hearing.
+        if current and _is_eqfx_sink(current):
+            active = active_output_sink()
+            if active:
+                return active
+        return current
     return target
+
+
+def _load_device_volumes() -> dict[str, Any]:
+    if not DEVICE_VOLUMES_PATH.is_file():
+        return {}
+    try:
+        raw = json.loads(DEVICE_VOLUMES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_device_volumes(payload: dict[str, Any]) -> None:
+    try:
+        DEVICE_VOLUMES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DEVICE_VOLUMES_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _remember_hw_volume(name: str) -> None:
+    if not name or _is_eqfx_sink(name):
+        return
+    volumes = _load_device_volumes()
+    volumes[name] = {"volume": _volume_of(name), "mute": _muted(name)}
+    _write_device_volumes(volumes)
+
+
+def _restore_hw_volume(name: str) -> bool:
+    if not name or _is_eqfx_sink(name):
+        return False
+    entry = _load_device_volumes().get(name)
+    if not isinstance(entry, dict):
+        return False
+    restored = False
+    if "volume" in entry:
+        try:
+            percent = max(0, min(150, int(entry["volume"])))
+        except (TypeError, ValueError):
+            percent = None
+        if percent is not None:
+            _pactl("set-sink-volume", name, f"{percent}%")
+            restored = True
+    if "mute" in entry:
+        _pactl("set-sink-mute", name, "1" if entry["mute"] else "0")
+        restored = True
+    return restored
 
 
 def resolve_source(target: str) -> str:
