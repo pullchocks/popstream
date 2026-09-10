@@ -480,6 +480,10 @@ def fix_microphone(settings: dict[str, Any]) -> bool:
 
 
 def _volume_of(target: str) -> int:
+    _, out = _pactl("get-sink-volume", target)
+    match = re.search(r"(\d+)%", out)
+    if match:
+        return int(match.group(1))
     entry = _find_device("sink", target)
     if entry:
         volume = entry.get("volume")
@@ -487,12 +491,10 @@ def _volume_of(target: str) -> int:
             for channel in volume.values():
                 if not isinstance(channel, dict):
                     continue
-                match = re.search(r"(\d+)", str(channel.get("value_percent") or ""))
-                if match:
-                    return int(match.group(1))
-    _, out = _pactl("get-sink-volume", target)
-    match = re.search(r"(\d+)%", out)
-    return int(match.group(1)) if match else 0
+                found = re.search(r"(\d+)", str(channel.get("value_percent") or ""))
+                if found:
+                    return int(found.group(1))
+    return 0
 
 
 def _muted(target: str) -> bool:
@@ -740,6 +742,23 @@ def _restore_hw_volume(name: str) -> bool:
     return restored
 
 
+def _output_sink(settings: dict[str, Any]) -> str:
+    raw = resolve_sink(sink_target(settings))
+    return pick_live_name("sink", raw) if raw else ""
+
+
+def _set_output_volume(settings: dict[str, Any], spec: str) -> bool:
+    name = _output_sink(settings)
+    if not name:
+        return False
+    code, _ = _pactl("set-sink-volume", name, spec)
+    _invalidate_snap()
+    if code == 0:
+        _remember_hw_volume(name)
+        _LiveAction._tick_all()
+    return code == 0
+
+
 def resolve_source(target: str) -> str:
     if not target or target == "@DEFAULT_SOURCE@":
         return default_source()
@@ -788,7 +807,9 @@ def paint_endpoint(ctx: ActionContext, kind: str, mode: str = "switch") -> None:
         ctx.set_state("ok")
     else:
         ctx.set_state("")
-    if mode == "mute" and kind != "sink":
+    if mode == "step":
+        ctx.set_title(None)
+    elif mode == "mute" and kind != "sink":
         ctx.set_title("MIC ON")
     elif mode in {"mute", "volume"}:
         ctx.set_title(f"{_volume_of(name or target)}%")
@@ -812,7 +833,7 @@ class _LiveAction(Action):
         if _LiveAction._shared is None:
             _LiveAction._shared = QTimer()
             _LiveAction._shared.timeout.connect(_LiveAction._tick_all)
-            _LiveAction._shared.start(1000)
+            _LiveAction._shared.start(400)
         self._tick()
 
     def will_disappear(self, ctx: ActionContext) -> None:
@@ -1119,16 +1140,12 @@ class SetInputAction(_LiveAction):
 
 class VolumeUpAction(_LiveAction):
     def update_visual(self, ctx: ActionContext) -> None:
-        paint_endpoint(ctx, "sink", mode="volume")
+        paint_endpoint(ctx, "sink", mode="step")
 
     def key_down(self, ctx: ActionContext) -> None:
         step = int(ctx.settings.get("step", 5))
-        target = sink_target(ctx.settings)
-        code, _ = _pactl("set-sink-volume", target, f"+{step}%")
-        _invalidate_snap()
-        if code != 0:
+        if not _set_output_volume(ctx.settings, f"+{step}%"):
             ctx.show_alert()
-        self.update_visual(ctx)
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
         return _StepInspector(ctx, "sink", parent)
@@ -1136,16 +1153,12 @@ class VolumeUpAction(_LiveAction):
 
 class VolumeDownAction(_LiveAction):
     def update_visual(self, ctx: ActionContext) -> None:
-        paint_endpoint(ctx, "sink", mode="volume")
+        paint_endpoint(ctx, "sink", mode="step")
 
     def key_down(self, ctx: ActionContext) -> None:
         step = int(ctx.settings.get("step", 5))
-        target = sink_target(ctx.settings)
-        code, _ = _pactl("set-sink-volume", target, f"-{step}%")
-        _invalidate_snap()
-        if code != 0:
+        if not _set_output_volume(ctx.settings, f"-{step}%"):
             ctx.show_alert()
-        self.update_visual(ctx)
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
         return _StepInspector(ctx, "sink", parent)
@@ -1157,12 +1170,8 @@ class SetVolumeAction(_LiveAction):
 
     def key_down(self, ctx: ActionContext) -> None:
         level = int(ctx.settings.get("level", 50))
-        target = sink_target(ctx.settings)
-        code, _ = _pactl("set-sink-volume", target, f"{level}%")
-        _invalidate_snap()
-        if code != 0:
+        if not _set_output_volume(ctx.settings, f"{level}%"):
             ctx.show_alert()
-        self.update_visual(ctx)
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
         return _LevelInspector(ctx, parent)
@@ -1175,7 +1184,7 @@ class MuteAction(_LiveAction):
     def key_down(self, ctx: ActionContext) -> None:
         if not toggle_endpoint_mute("sink", ctx.settings):
             ctx.show_alert()
-        self.update_visual(ctx)
+        _LiveAction._tick_all()
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
         return _DeviceInspector(ctx, "sink", parent)
@@ -1273,7 +1282,7 @@ class VolumeMeterAction(_LiveAction):
 
     def key_down(self, ctx: ActionContext) -> None:
         toggle_endpoint_mute("sink", ctx.settings)
-        self.update_visual(ctx)
+        _LiveAction._tick_all()
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
         return _DeviceInspector(ctx, "sink", parent)
