@@ -22,11 +22,13 @@ Install these on the host first. `setup.py` installs PySide6 into `.venv`; it do
 Optional companions:
 
 - [`pactl`](https://www.freedesktop.org/wiki/Software/PulseAudio/): output / input / mute / volume
+- `parec` (PipeWire-pulse / PulseAudio): live Mic Check level meter
 - [`playerctl`](https://github.com/altdesktop/playerctl): play / pause / skip
 - [`upower`](https://upower.freedesktop.org/): wireless device battery
 - **Bloop**: soundboard keys (must be running)
 - **Cliamp**: music player keys (must be running)
 - **eqFX**: EQ preset keys
+- `hyprctl` / `swaymsg` / `wmctrl`: Move to Monitor on Hyprland, Sway, or X11
 
 ## Install
 
@@ -83,10 +85,10 @@ Mute, missing devices, and the active **Set Output** / **Set Input** show on the
 
 | Group | Actions |
 | --- | --- |
-| System | Website, Open App, Run Command, Hotkey, Text |
+| System | Website, Open App, Run Command, Hotkey, Text, Move to Monitor |
 | Navigation | Folder, Back, Next Page, Previous Page |
 | Clock | Clock, Date |
-| Audio | Set Output, Set Input, EQ Preset, volume / mute, Play / Pause, skip, stop |
+| Audio | Set Output, Set Input, Fix Mic, Mic Check, EQ Preset, volume / mute, Play / Pause, skip, stop |
 | Battery | Device Battery (UPower) |
 | Bloop | Play Sound, Play / Stop, Stop All, Play Random, volume, Cable, Now Playing |
 | Cliamp | Play / Pause, Now Playing, skip, stop, volume, shuffle, repeat, playlist, EQ |

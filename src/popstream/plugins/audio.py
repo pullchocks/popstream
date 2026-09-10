@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import struct
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QLineEdit,
@@ -18,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from popstream.core.plugin import Action, ActionContext, ActionInfo, Plugin
-from popstream.ui.theme import fit_combo, plain_spin, tighten_form
+from popstream.ui.theme import C, fit_combo, plain_spin, tighten_form
 
 
 def _run_bin(name: str, *args: str) -> tuple[int, str]:
@@ -401,12 +405,69 @@ def set_default_source(name: str) -> bool:
     _invalidate_snap()
     if code != 0:
         return False
+    entry = _find_device("source", name)
+    node = _node_id(entry)
+    if node:
+        _wpctl("set-default", node)
+    _move_source_outputs(name)
+    return True
+
+
+def _move_source_outputs(name: str) -> None:
     _, rows = _pactl("list", "short", "source-outputs")
     for line in rows.splitlines():
         parts = line.split()
         if parts:
             _pactl("move-source-output", parts[0], name)
-    return True
+
+
+def _source_volume(name: str, entry: dict[str, Any] | None = None) -> int:
+    row = entry if entry is not None else _find_device("source", name)
+    if row:
+        volume = row.get("volume")
+        if isinstance(volume, dict):
+            for channel in volume.values():
+                if not isinstance(channel, dict):
+                    continue
+                match = re.search(r"(\d+)", str(channel.get("value_percent") or ""))
+                if match:
+                    return int(match.group(1))
+    _, out = _pactl("get-source-volume", name)
+    match = re.search(r"(\d+)%", out)
+    return int(match.group(1)) if match else 0
+
+
+def fix_microphone(settings: dict[str, Any]) -> bool:
+    """Re-assert mic default, unmute Pulse/WirePlumber/ALSA, reattach capture clients.
+
+    Helps Proton/Wine games that keep a stale or muted capture after Set Input.
+    """
+    wanted = str(settings.get("device") or "").strip() or default_source()
+    name = pick_live_name("source", wanted) if wanted else ""
+    if not name:
+        return False
+    _invalidate_snap()
+    entry = _find_device("source", name)
+    set_endpoint_mute("source", name, entry, False)
+    raise_if_silent = bool(settings.get("raise_if_silent", True))
+    if raise_if_silent and _source_volume(name, entry) <= 0:
+        _pactl("set-source-volume", name, "100%")
+    if not set_default_source(name):
+        return False
+    if bool(settings.get("kick_source")):
+        _pactl("suspend-source", name, "1")
+        time.sleep(0.15)
+        _pactl("suspend-source", name, "0")
+    time.sleep(0.2)
+    _invalidate_snap()
+    name = pick_live_name("source", name) or name
+    _move_source_outputs(name)
+    _invalidate_snap()
+    current = default_source()
+    entry = _find_device("source", name)
+    ok = bool(current) and (current == name or same_card(current, name))
+    ok = ok and not endpoint_muted("source", name, entry)
+    return ok
 
 
 def _volume_of(target: str) -> int:
@@ -1070,6 +1131,79 @@ class MuteMicAction(_LiveAction):
         return _DeviceInspector(ctx, "source", parent)
 
 
+class _FixMicInspector(QWidget):
+    def __init__(self, ctx: ActionContext, parent=None) -> None:
+        super().__init__(parent)
+        self._ctx = ctx
+        layout = QFormLayout(self)
+        tighten_form(layout)
+        self.combo = fit_combo(QComboBox())
+        self._fill()
+        self.combo.currentIndexChanged.connect(self._save)
+        refresh = QPushButton("Refresh devices")
+        refresh.clicked.connect(self._fill)
+        self.raise_silent = QCheckBox("Raise volume if at 0%")
+        self.raise_silent.setChecked(bool(ctx.settings.get("raise_if_silent", True)))
+        self.raise_silent.toggled.connect(self._save)
+        self.kick = QCheckBox("Suspend/resume source (harder kick)")
+        self.kick.setChecked(bool(ctx.settings.get("kick_source", False)))
+        self.kick.toggled.connect(self._save)
+        layout.addRow("Device", self.combo)
+        layout.addRow("", refresh)
+        layout.addRow("", self.raise_silent)
+        layout.addRow("", self.kick)
+
+    def _fill(self) -> None:
+        current = str(self._ctx.settings.get("device") or "")
+        items = list_sources()
+        live = {name for name, _desc in items}
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        self.combo.addItem("Default / current", "")
+        for name, desc in items:
+            self.combo.addItem(_short(desc), name)
+        if current and current not in live:
+            label = _short(str(self._ctx.settings.get("device_label") or current))
+            self.combo.addItem(f"{label}  (off)", current)
+        index = self.combo.findData(current)
+        if index < 0 and current:
+            for i in range(self.combo.count()):
+                if same_card(str(self.combo.itemData(i) or ""), current):
+                    index = i
+                    break
+        self.combo.setCurrentIndex(index if index >= 0 else 0)
+        self.combo.blockSignals(False)
+
+    def _save(self) -> None:
+        settings = dict(self._ctx.settings)
+        settings["device"] = self.combo.currentData() or ""
+        settings["device_label"] = "" if not settings["device"] else _short(self.combo.currentText())
+        settings["raise_if_silent"] = self.raise_silent.isChecked()
+        settings["kick_source"] = self.kick.isChecked()
+        self._ctx.set_settings(settings)
+
+
+class FixMicAction(_LiveAction):
+    def update_visual(self, ctx: ActionContext) -> None:
+        paint_endpoint(ctx, "source", mode="switch")
+        label = str(ctx.settings.get("device_label") or "").strip()
+        if not label:
+            name = resolve_source(source_target(ctx.settings))
+            label = _device_label("source", name, list_sources(), ctx.settings)
+        ctx.set_title(f"Fix\n{_short(label)}" if label else "Fix Mic")
+
+    def key_down(self, ctx: ActionContext) -> None:
+        if fix_microphone(ctx.settings):
+            ctx.show_ok()
+        else:
+            ctx.show_alert()
+            ctx.log("Fix Mic could not re-assert the capture device")
+        self.update_visual(ctx)
+
+    def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
+        return _FixMicInspector(ctx, parent)
+
+
 class VolumeMeterAction(_LiveAction):
     def update_visual(self, ctx: ActionContext) -> None:
         paint_endpoint(ctx, "sink", mode="volume")
@@ -1114,6 +1248,325 @@ class StopAction(MediaAction):
     command = "stop"
 
 
+class _MicPeakSampler:
+    """Shared background capture reader for live mic peak levels."""
+
+    _instance: _MicPeakSampler | None = None
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._peak = 0.0
+        self._source = ""
+        self._wanted = ""
+        self._refs = 0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._proc: subprocess.Popen[bytes] | None = None
+
+    @classmethod
+    def shared(cls) -> _MicPeakSampler:
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def acquire(self, source: str) -> None:
+        with self._lock:
+            self._refs += 1
+            self._wanted = source
+            if self._thread is None or not self._thread.is_alive():
+                self._stop.clear()
+                self._thread = threading.Thread(target=self._run, name="popstream-mic-peak", daemon=True)
+                self._thread.start()
+
+    def release(self) -> None:
+        with self._lock:
+            self._refs = max(0, self._refs - 1)
+            if self._refs == 0:
+                self._stop.set()
+                self._wanted = ""
+        self._kill_proc()
+
+    def set_source(self, source: str) -> None:
+        with self._lock:
+            if source != self._wanted:
+                self._wanted = source
+                self._peak = 0.0
+
+    def peak(self) -> float:
+        with self._lock:
+            return self._peak
+
+    def _kill_proc(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=0.4)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            with self._lock:
+                if self._refs <= 0:
+                    break
+                source = self._wanted
+            if not source or not shutil.which("parec"):
+                time.sleep(0.25)
+                with self._lock:
+                    self._peak *= 0.7
+                continue
+            args = [
+                "parec",
+                "--raw",
+                "--format=s16le",
+                "--rate=16000",
+                "--channels=1",
+                "--latency-msec=40",
+                f"--device={source}",
+            ]
+            try:
+                self._proc = subprocess.Popen(
+                    args,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=0,
+                )
+            except OSError:
+                time.sleep(0.4)
+                continue
+            assert self._proc.stdout is not None
+            chunk = 640  # 20ms at 16k mono s16
+            while not self._stop.is_set():
+                with self._lock:
+                    if self._refs <= 0 or self._wanted != source:
+                        break
+                data = self._proc.stdout.read(chunk)
+                if not data:
+                    break
+                count = len(data) // 2
+                if count <= 0:
+                    continue
+                samples = struct.unpack("<" + "h" * count, data[: count * 2])
+                instant = max(abs(s) for s in samples) / 32768.0
+                with self._lock:
+                    self._peak = max(instant, self._peak * 0.82)
+                    self._source = source
+            self._kill_proc()
+            time.sleep(0.05)
+        with self._lock:
+            self._peak = 0.0
+            self._thread = None
+
+
+def _focused_app_label() -> tuple[str, str]:
+    """Return (short_label, match_blob) for the focused window."""
+    if shutil.which("hyprctl"):
+        code, out = _run_bin("hyprctl", "-j", "activewindow")
+        if code == 0 and out:
+            try:
+                data = json.loads(out)
+            except json.JSONDecodeError:
+                data = {}
+            if isinstance(data, dict) and data.get("address"):
+                klass = str(data.get("class") or "")
+                title = str(data.get("title") or "")
+                label = title or klass or "Desktop"
+                if len(label) > 18:
+                    label = label[:16] + "…"
+                return label, f"{klass} {title}".lower()
+    if shutil.which("xdotool"):
+        code, wid = _run_bin("xdotool", "getactivewindow")
+        if code == 0 and wid:
+            _, title = _run_bin("xdotool", "getwindowname", wid.strip())
+            _, klass = _run_bin("xdotool", "getwindowclassname", wid.strip())
+            label = (title or klass or "Desktop").strip()
+            if len(label) > 18:
+                label = label[:16] + "…"
+            return label, f"{klass} {title}".lower()
+    return "Desktop", ""
+
+
+def _source_output_apps(source_name: str) -> list[str]:
+    rows = _json_list("source-outputs")
+    apps: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        props = row.get("properties") if isinstance(row.get("properties"), dict) else {}
+        src = str(
+            props.get("application.process.binary")
+            or props.get("application.name")
+            or props.get("media.name")
+            or ""
+        )
+        # Pulse JSON may put source index elsewhere; fall back to matching via short list
+        apps.append(src.lower())
+    # Prefer short list mapping output -> source name when available
+    _, short = _pactl("list", "short", "source-outputs")
+    named: list[str] = []
+    for line in short.splitlines():
+        parts = line.split("\t") if "\t" in line else line.split()
+        if len(parts) < 3:
+            continue
+        # index, source, client, ...
+        src = parts[1]
+        if src == source_name or same_card(src, source_name):
+            # try to find matching row by index
+            idx = parts[0]
+            for row in rows:
+                if str(row.get("index")) == idx:
+                    props = row.get("properties") if isinstance(row.get("properties"), dict) else {}
+                    blob = " ".join(
+                        str(props.get(k) or "")
+                        for k in (
+                            "application.process.binary",
+                            "application.name",
+                            "media.name",
+                            "application.process.host",
+                        )
+                    ).lower()
+                    if blob.strip():
+                        named.append(blob)
+            if not named and len(parts) >= 4:
+                named.append(parts[3].lower())
+    return named or apps
+
+
+def _focused_app_using_mic(source_name: str, match_blob: str) -> bool:
+    if not match_blob:
+        return False
+    tokens = [t for t in re.split(r"[\s._-]+", match_blob) if len(t) >= 3]
+    for app in _source_output_apps(source_name):
+        if not app:
+            continue
+        if any(tok in app for tok in tokens):
+            return True
+        if any(tok in match_blob for tok in re.split(r"[\s._-]+", app) if len(tok) >= 3):
+            return True
+    return False
+
+
+def _mic_check_image(peak: float, muted: bool, capturing: bool, size: int = 144) -> QImage:
+    image = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(QColor("#121212"))
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    margin = size * 0.12
+    bar = QRectF(margin, margin, size - 2 * margin, size - 2 * margin)
+    painter.setPen(QPen(QColor("#2a2a2a"), max(2, size // 48)))
+    painter.setBrush(QColor("#1a1a1a"))
+    painter.drawRoundedRect(bar, 10, 10)
+
+    level = 0.0 if muted else max(0.0, min(1.0, peak))
+    segments = 10
+    gap = bar.height() * 0.03
+    seg_h = (bar.height() - gap * (segments + 1)) / segments
+    filled = int(round(level * segments))
+    for i in range(segments):
+        y = bar.bottom() - gap - (i + 1) * (seg_h + gap) + gap
+        rect = QRectF(bar.left() + bar.width() * 0.22, y, bar.width() * 0.56, seg_h)
+        if i < filled:
+            if i >= segments - 2:
+                color = QColor(C.danger)
+            elif i >= segments - 4:
+                color = QColor("#e0a100")
+            else:
+                color = QColor(C.ok if capturing else C.accent)
+            painter.fillRect(rect, color)
+        else:
+            painter.fillRect(rect, QColor("#2b2b2b"))
+
+    painter.setPen(QColor(C.muted))
+    font = QFont()
+    font.setPixelSize(max(10, size // 9))
+    font.setBold(True)
+    painter.setFont(font)
+    label = "MUTE" if muted else f"{int(level * 100)}%"
+    painter.drawText(QRectF(0, size * 0.02, size, size * 0.16), int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter), label)
+    painter.end()
+    return image
+
+
+class MicCheckAction(Action):
+    """Live mic VU bar plus focused-app label for in-game mic checks."""
+
+    def __init__(self) -> None:
+        self._ctx: ActionContext | None = None
+        self._timer: QTimer | None = None
+        self._sampler = _MicPeakSampler.shared()
+        self._source = ""
+
+    def will_appear(self, ctx: ActionContext) -> None:
+        self._ctx = ctx
+        self._source = self._resolve_source(ctx)
+        self._sampler.acquire(self._source)
+        if self._timer is None:
+            self._timer = QTimer()
+            self._timer.timeout.connect(self._tick)
+        self._timer.start(120)
+        self._tick()
+
+    def will_disappear(self, ctx: ActionContext) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+        self._sampler.release()
+        self._ctx = None
+
+    def settings_did_change(self, ctx: ActionContext) -> None:
+        self._ctx = ctx
+        self._source = self._resolve_source(ctx)
+        self._sampler.set_source(self._source)
+        self._tick()
+
+    def _resolve_source(self, ctx: ActionContext) -> str:
+        wanted = str(ctx.settings.get("device") or "").strip() or default_source()
+        return pick_live_name("source", wanted) if wanted else ""
+
+    def _tick(self) -> None:
+        ctx = self._ctx
+        if ctx is None:
+            return
+        source = self._resolve_source(ctx)
+        if source != self._source:
+            self._source = source
+            self._sampler.set_source(source)
+        entry = _find_device("source", source) if source else None
+        muted = endpoint_muted("source", source, entry) if source else True
+        peak = 0.0 if muted or not source else self._sampler.peak()
+        app_label, match_blob = _focused_app_label()
+        capturing = bool(source) and _focused_app_using_mic(source, match_blob)
+        if muted:
+            ctx.set_state("danger")
+        elif capturing and peak > 0.02:
+            ctx.set_state("ok")
+        elif peak > 0.02:
+            ctx.set_state("")
+        else:
+            ctx.set_state("danger" if not source else "")
+        if ctx.slot_title.strip():
+            ctx.set_title(None)
+        else:
+            suffix = "IN" if capturing else ("MUTE" if muted else "MIC")
+            ctx.set_title(f"{app_label}\n{suffix}")
+        ctx.set_image(_mic_check_image(peak, muted, capturing))
+
+    def key_down(self, ctx: ActionContext) -> None:
+        if fix_microphone(ctx.settings):
+            ctx.show_ok()
+        else:
+            ctx.show_alert()
+        self._tick()
+
+    def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
+        return _DeviceInspector(ctx, "source", parent)
+
+
 class AudioPlugin(Plugin):
     id = "com.popstream.audio"
     name = "Audio"
@@ -1125,6 +1578,20 @@ class AudioPlugin(Plugin):
             ActionInfo("set-output", "Set Output", "Audio", "Switch the default speakers / headphones", "speaker"),
             ActionInfo("eq-preset", "EQ Preset", "Audio", "Load an eqFX curve on the current output", "eq"),
             ActionInfo("set-input", "Set Input", "Audio", "Switch the default microphone", "mic"),
+            ActionInfo(
+                "fix-mic",
+                "Fix Mic",
+                "Audio",
+                "Re-apply mic default, unmute, and reattach games / Proton capture",
+                "mic",
+            ),
+            ActionInfo(
+                "mic-check",
+                "Mic Check",
+                "Audio",
+                "Live mic level bar for the focused app; press to Fix Mic",
+                "mic",
+            ),
             ActionInfo("vol-up", "Volume Up", "Audio", "Raise output volume", "volup"),
             ActionInfo("vol-down", "Volume Down", "Audio", "Lower output volume", "voldown"),
             ActionInfo("set-volume", "Set Volume", "Audio", "Jump to a specific volume", "speaker"),
@@ -1142,6 +1609,8 @@ class AudioPlugin(Plugin):
             "set-output": SetOutputAction,
             "eq-preset": SetEqPresetAction,
             "set-input": SetInputAction,
+            "fix-mic": FixMicAction,
+            "mic-check": MicCheckAction,
             "vol-up": VolumeUpAction,
             "vol-down": VolumeDownAction,
             "set-volume": SetVolumeAction,

@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QSystemTrayIcon,
@@ -37,6 +39,7 @@ class MainWindow(QMainWindow):
         self.engine = engine
         self.setWindowTitle("PopStream")
         self.resize(1280, 820)
+        self.setMinimumSize(900, 620)
         self._syncing = False
         self._settings = None
         self._force_quit = False
@@ -58,23 +61,35 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.banner)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
         self.catalog = ActionCatalog(engine)
         self.catalog.setMinimumWidth(220)
+        self.catalog.setMaximumWidth(320)
+        self.catalog.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         center = QWidget()
+        center.setMinimumWidth(320)
+        center.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         center_l = QVBoxLayout(center)
         center_l.setContentsMargins(0, 0, 0, 0)
         self.canvas = DeviceCanvas(engine)
         center_l.addWidget(self.canvas, 1)
         center_l.addWidget(self._build_pagebar())
         self.inspector = PropertyInspector(engine)
-        self.inspector.setMinimumWidth(280)
+        inspector_scroll = QScrollArea()
+        inspector_scroll.setWidgetResizable(True)
+        inspector_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inspector_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inspector_scroll.setWidget(self.inspector)
+        inspector_scroll.setMinimumWidth(280)
+        inspector_scroll.setMaximumWidth(380)
+        inspector_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         splitter.addWidget(self.catalog)
         splitter.addWidget(center)
-        splitter.addWidget(self.inspector)
+        splitter.addWidget(inspector_scroll)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        splitter.setSizes([250, 700, 320])
+        splitter.setSizes([250, 700, 300])
         layout.addWidget(splitter, 1)
 
         status = QStatusBar()
@@ -100,13 +115,15 @@ class MainWindow(QMainWindow):
         row.setContentsMargins(14, 10, 14, 10)
         row.addWidget(self._muted("Device"))
         self.device_combo = QComboBox()
-        self.device_combo.setMinimumWidth(220)
+        self.device_combo.setMinimumWidth(180)
+        self.device_combo.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.device_combo.currentIndexChanged.connect(self._device_changed)
         row.addWidget(self.device_combo)
         row.addSpacing(12)
         row.addWidget(self._muted("Profile"))
         self.profile_combo = QComboBox()
-        self.profile_combo.setMinimumWidth(160)
+        self.profile_combo.setMinimumWidth(140)
+        self.profile_combo.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.profile_combo.currentIndexChanged.connect(self._profile_changed)
         row.addWidget(self.profile_combo)
         row.addStretch()
@@ -291,6 +308,27 @@ class MainWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+        # Wayland often ignores activateWindow; nudge Hyprland when available.
+        QTimer.singleShot(0, self._focus_on_hyprland)
+
+    def _focus_on_hyprland(self) -> None:
+        import os
+        import shutil
+        import subprocess
+
+        if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            return
+        if not shutil.which("hyprctl"):
+            return
+        try:
+            subprocess.run(
+                ["hyprctl", "dispatch", "focuswindow", "class:^(popstream)$"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            pass
 
     def _open_settings_from_tray(self) -> None:
         self._show_from_tray()

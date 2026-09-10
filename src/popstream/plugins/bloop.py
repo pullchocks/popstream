@@ -28,8 +28,11 @@ def _ipc_candidates() -> list[Path]:
     candidates = [
         home / ".local" / "share" / "Bloop" / "ipc.json",
         home / ".local" / "share" / "bloop" / "ipc.json",
-        Path.cwd() / ".bloop-data" / "ipc.json",
     ]
+    try:
+        candidates.append(Path.cwd() / ".bloop-data" / "ipc.json")
+    except FileNotFoundError:
+        pass
     try:
         candidates.append(here.parents[4] / "bloop" / ".bloop-data" / "ipc.json")
     except IndexError:

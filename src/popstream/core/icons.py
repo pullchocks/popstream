@@ -135,6 +135,11 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
         painter.drawArc(QRectF(box.left() + box.width() * 0.18, box.top() + box.height() * 0.28, box.width() * 0.64, box.height() * 0.42), 180 * 16, 180 * 16)
         painter.drawLine(box.center().x(), box.top() + box.height() * 0.7, box.center().x(), box.bottom() - box.height() * 0.12)
         painter.drawLine(box.center().x() - box.width() * 0.16, box.bottom() - box.height() * 0.12, box.center().x() + box.width() * 0.16, box.bottom() - box.height() * 0.12)
+    elif k == "monitor":
+        frame = QRectF(box.left() + box.width() * 0.12, box.top() + box.height() * 0.12, box.width() * 0.76, box.height() * 0.52)
+        painter.drawRoundedRect(frame, 4, 4)
+        painter.drawLine(box.center().x(), frame.bottom(), box.center().x(), box.bottom() - box.height() * 0.16)
+        painter.drawLine(box.center().x() - box.width() * 0.18, box.bottom() - box.height() * 0.16, box.center().x() + box.width() * 0.18, box.bottom() - box.height() * 0.16)
     elif k == "play":
         path = QPainterPath()
         path.moveTo(box.left() + box.width() * 0.28, box.top() + box.height() * 0.18)

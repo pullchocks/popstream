@@ -83,13 +83,15 @@ def tighten_form(layout: QFormLayout) -> None:
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setHorizontalSpacing(10)
     layout.setVerticalSpacing(8)
-    layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+    layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+    layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+    layout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
 
 def fit_combo(combo: QComboBox) -> QComboBox:
     combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-    combo.setMinimumContentsLength(4)
-    combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    combo.setMinimumContentsLength(18)
+    combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     return combo
 
 
@@ -99,6 +101,7 @@ def plain_spin(minimum: int, maximum: int, value: int = 0) -> QSpinBox:
     box.setRange(minimum, maximum)
     box.setValue(value)
     box.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     return box
 
 

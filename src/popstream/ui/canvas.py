@@ -18,6 +18,10 @@ from PySide6.QtWidgets import QGridLayout, QSizePolicy, QVBoxLayout, QWidget
 from popstream.core.engine import Engine
 from popstream.ui.theme import C, MIME_ACTION, MIME_KEY
 
+KEY_HINT = 78
+KEY_MIN = 52
+KEY_MAX = 160
+
 
 def _action_from_mime(mime: QMimeData) -> tuple[str, str] | None:
     raw = ""
@@ -62,6 +66,7 @@ class KeyPad(QWidget):
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.setFixedSize(KEY_HINT, KEY_HINT)
 
     def set_empty(self, empty: bool) -> None:
         self._empty = empty
@@ -72,10 +77,10 @@ class KeyPad(QWidget):
         self.update()
 
     def sizeHint(self) -> QSize:
-        return QSize(78, 78)
+        return QSize(KEY_HINT, KEY_HINT)
 
     def minimumSizeHint(self) -> QSize:
-        return self.sizeHint()
+        return QSize(KEY_MIN, KEY_MIN)
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
@@ -197,19 +202,84 @@ class DeviceCanvas(QWidget):
         self.engine = engine
         self._keys: list[KeyPad] = []
         self._hint = ""
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 16, 18, 18)
+        self._cell = KEY_HINT
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(10, 8, 10, 8)
         self._face = QWidget(self)
         self._face.setObjectName("deviceFace")
         self._face.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self._face.setStyleSheet("background: transparent;")
-        self._grid = QGridLayout(self._face)
-        self._grid.setContentsMargins(26, 22, 26, 54)
-        self._grid.setSpacing(14)
+        self._face.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._face_layout = QVBoxLayout(self._face)
+        self._face_layout.setContentsMargins(0, 0, 0, 0)
+        self._face_layout.setSpacing(0)
+        self._grid_host = QWidget(self._face)
+        self._grid_host.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self._grid = QGridLayout(self._grid_host)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(12)
         self.setAcceptDrops(True)
-        outer.addWidget(self._face, 0, Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumHeight(280)
+        self._face_layout.addStretch(1)
+        self._face_layout.addWidget(self._grid_host, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._face_layout.addStretch(1)
+        self._outer.addWidget(self._face, 1)
+        self.setMinimumHeight(200)
         self.rebuild()
+
+    def _chrome(self) -> tuple[int, int, int, int]:
+        """Padding inside the face around the key grid (left, top, right, bottom)."""
+        spec = self.engine.current_spec()
+        extra_bottom = 36 if spec.extra in ("dials", "touchstrip") else 0
+        return 28, 24, 28, 48 + extra_bottom
+
+    def _grid_size_for(self, cell: int) -> QSize:
+        spec = self.engine.current_spec()
+        spacing = self._grid.spacing()
+        cols = max(1, spec.columns)
+        rows = max(1, (spec.key_count + cols - 1) // cols)
+        width = cols * cell + max(0, cols - 1) * spacing
+        height = rows * cell + max(0, rows - 1) * spacing
+        return QSize(width, height)
+
+    def _available_face(self) -> QSize:
+        m = self._outer.contentsMargins()
+        return QSize(
+            max(0, self.width() - m.left() - m.right()),
+            max(0, self.height() - m.top() - m.bottom()),
+        )
+
+    def _compute_cell(self) -> int:
+        spec = self.engine.current_spec()
+        cols = max(1, spec.columns)
+        rows = max(1, (spec.key_count + cols - 1) // cols)
+        left, top, right, bottom = self._chrome()
+        spacing = self._grid.spacing()
+        avail = self._available_face()
+        by_w = (avail.width() - left - right - max(0, cols - 1) * spacing) // cols
+        by_h = (avail.height() - top - bottom - max(0, rows - 1) * spacing) // rows
+        if by_w <= 0 or by_h <= 0:
+            return KEY_MIN
+        room = min(by_w, by_h)
+        return max(KEY_MIN, min(KEY_MAX, room))
+
+    def _apply_cell_size(self) -> None:
+        cell = self._compute_cell()
+        grid = self._grid_size_for(cell)
+        left, top, right, bottom = self._chrome()
+        self._face_layout.setContentsMargins(left, top, right, bottom)
+        if cell == self._cell and self._grid_host.size() == grid:
+            self.update()
+            return
+        self._cell = cell
+        for key in self._keys:
+            key.setFixedSize(cell, cell)
+        self._grid_host.setFixedSize(grid)
+        self.update()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_cell_size()
 
     def rebuild(self) -> None:
         while self._grid.count():
@@ -218,10 +288,8 @@ class DeviceCanvas(QWidget):
                 item.widget().deleteLater()
         self._keys.clear()
         spec = self.engine.current_spec()
-        extra_bottom = 36 if spec.extra in ("dials", "touchstrip") else 0
-        self._grid.setContentsMargins(26, 22, 26, 54 + extra_bottom)
         for i in range(spec.key_count):
-            key = KeyPad(i, self._face)
+            key = KeyPad(i, self._grid_host)
             key.engine = self.engine
             key.selected.connect(self.engine.select_key)
             key.tested.connect(self.engine.test_key)
@@ -235,11 +303,13 @@ class DeviceCanvas(QWidget):
             "touchstrip": "Info bar — hardware plugin",
             "no_lcd": "Pedal — no LCD keys",
         }.get(spec.extra, "")
+        self._cell = -1
+        self._apply_cell_size()
         self.refresh()
         self.update()
 
     def _key_at(self, pos: QPoint) -> KeyPad | None:
-        local = self._face.mapFrom(self, pos)
+        local = self._grid_host.mapFrom(self, pos)
         for key in self._keys:
             if key.geometry().contains(local):
                 return key

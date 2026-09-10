@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QTime, QTimer
+from PySide6.QtCore import QDate, Qt, QTime, QTimer
 from PySide6.QtWidgets import QComboBox, QFormLayout, QWidget
 
 from popstream.core.plugin import Action, ActionContext, ActionInfo, Plugin
@@ -82,7 +82,8 @@ class _FormatInspector(QWidget):
         self.combo = fit_combo(QComboBox())
         current = ctx.settings.get("format", options[0][0])
         for value, label in options:
-            self.combo.addItem(f"{label}  ({value})", value)
+            self.combo.addItem(label, value)
+            self.combo.setItemData(self.combo.count() - 1, value, Qt.ItemDataRole.ToolTipRole)
         index = self.combo.findData(current)
         if index >= 0:
             self.combo.setCurrentIndex(index)

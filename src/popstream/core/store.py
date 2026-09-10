@@ -9,13 +9,23 @@ from popstream.core.profile import Profile
 from popstream.core.specs import SPECS
 
 
+def _cwd_or_none() -> Path | None:
+    """Return cwd when it still exists; deleted cwd raises FileNotFoundError on Linux."""
+    try:
+        return Path.cwd()
+    except FileNotFoundError:
+        return None
+
+
 def data_dir() -> Path:
     candidates = []
     qt_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
     if qt_path:
         candidates.append(Path(qt_path))
     candidates.append(Path.home() / ".local" / "share" / "PopStream")
-    candidates.append(Path.cwd() / ".popstream-data")
+    cwd = _cwd_or_none()
+    if cwd is not None:
+        candidates.append(cwd / ".popstream-data")
     for path in candidates:
         # Keep the product name even when Qt has no QApplication yet.
         if path.name.lower() not in {"popstream", ".popstream-data"}:
@@ -34,7 +44,10 @@ def profiles_dir() -> Path:
         path.mkdir(parents=True, exist_ok=True)
         return path
     except OSError:
-        path = Path.cwd() / ".popstream-data" / "profiles"
+        cwd = _cwd_or_none()
+        if cwd is None:
+            raise
+        path = cwd / ".popstream-data" / "profiles"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -45,7 +58,10 @@ def user_plugins_dir() -> Path:
         path.mkdir(parents=True, exist_ok=True)
         return path
     except OSError:
-        path = Path.cwd() / ".popstream-data" / "plugins"
+        cwd = _cwd_or_none()
+        if cwd is None:
+            raise
+        path = cwd / ".popstream-data" / "plugins"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -118,13 +134,13 @@ def _demo_profile() -> Profile:
         plugin_id="com.popstream.system",
         action_id="open-url",
         title="GitHub",
-        settings={"url": "https://github.com"},
+        settings={"url": "https://github.com/pullchocks"},
     )
     page.buttons[2] = page.buttons[2].__class__(
         plugin_id="com.popstream.system",
         action_id="open-url",
         title="Docs",
-        settings={"url": "https://docs.elgato.com/streamdeck"},
+        settings={"url": "https://github.com/pullchocks/popstream/blob/main/README.md"},
     )
     page.buttons[4] = page.buttons[4].__class__(
         plugin_id="com.popstream.navigation",

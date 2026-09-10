@@ -185,6 +185,7 @@ class ActionCatalog(QWidget):
         self._tiles: list[ActionTile] = []
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(6)
         title = QLabel("Actions")
         title.setStyleSheet("font-weight: 700; font-size: 14px;")
         self.search = QLineEdit()
@@ -196,8 +197,8 @@ class ActionCatalog(QWidget):
         scroll.setWidgetResizable(True)
         self._inner = QWidget()
         self._layout = QVBoxLayout(self._inner)
-        self._layout.setContentsMargins(0, 8, 0, 0)
-        self._layout.setSpacing(8)
+        self._layout.setContentsMargins(0, 4, 0, 0)
+        self._layout.setSpacing(6)
         scroll.setWidget(self._inner)
         outer.addWidget(scroll, 1)
         self.engine.palette_changed.connect(self._sync_chosen)

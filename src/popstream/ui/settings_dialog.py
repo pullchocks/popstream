@@ -28,8 +28,7 @@ class SettingsDialog(QDialog):
         self.engine = engine
         self.setWindowTitle("Settings")
         self.setModal(False)
-        self.setMinimumWidth(460)
-        self.setMinimumHeight(420)
+        self.setMinimumSize(360, 280)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)

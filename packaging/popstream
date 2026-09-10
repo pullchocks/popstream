@@ -2,4 +2,16 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 cd "$ROOT"
-exec -a popstream python3 "$ROOT/run.py" "$@"
+
+# Prefer a real interpreter path. Hyprland/uwsm put mise shims first on PATH;
+# `exec -a popstream python3` then invokes the shim with argv0=popstream, and
+# mise errors with "popstream is not a valid shim" before Python starts.
+# Dependencies live in .venv via pip --target; run.py puts that on sys.path.
+if [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PYTHON="$ROOT/.venv/bin/python"
+elif [[ -x /usr/bin/python3 ]]; then
+  PYTHON=/usr/bin/python3
+else
+  PYTHON="$(command -v python3)"
+fi
+exec -a popstream "$PYTHON" "$ROOT/run.py" "$@"
