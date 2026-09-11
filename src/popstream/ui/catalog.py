@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 
-from PySide6.QtCore import QMimeData, QPoint, QRectF, Qt
+from PySide6.QtCore import QMimeData, QPoint, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QDrag, QMouseEvent, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -120,11 +120,11 @@ class ActionTile(QFrame):
         self._dragging = True
         drag = QDrag(self)
         mime = QMimeData()
-        settings = None
+        settings = dict(self.action.defaults or {})
         engine = self.catalog.engine
         if engine.palette_plugin_id == self.plugin_id and engine.palette_action_id == self.action.id:
-            settings = dict(engine.palette_settings)
-        raw = action_payload(self.plugin_id, self.action.id, settings)
+            settings.update(engine.palette_settings)
+        raw = action_payload(self.plugin_id, self.action.id, settings or None)
         mime.setData(MIME_ACTION, raw)
         mime.setText(raw.decode())
         drag.setMimeData(mime)
@@ -202,6 +202,11 @@ class ActionCatalog(QWidget):
         scroll.setWidget(self._inner)
         outer.addWidget(scroll, 1)
         self.engine.palette_changed.connect(self._sync_chosen)
+        self._refresh = QTimer(self)
+        self._refresh.setInterval(2500)
+        self._refresh.timeout.connect(self._refresh_library)
+        self._refresh.start()
+        self._library_sig = ""
         self.rebuild()
 
     def choose(self, plugin_id: str, action_id: str) -> None:
@@ -224,7 +229,18 @@ class ActionCatalog(QWidget):
         settings.pop("catalog_collapsed", None)
         save_settings(settings)
 
+    def _refresh_library(self) -> None:
+        self.engine.host.refresh_actions()
+        sig = tuple((info.category, info.id, info.name) for loaded in self.engine.host.loaded for info in loaded.actions)
+        if sig == self._library_sig:
+            return
+        self.rebuild()
+
     def rebuild(self) -> None:
+        self.engine.host.refresh_actions()
+        self._library_sig = tuple(
+            (info.category, info.id, info.name) for loaded in self.engine.host.loaded for info in loaded.actions
+        )
         while self._layout.count():
             item = self._layout.takeAt(0)
             if item.widget():

@@ -92,7 +92,7 @@ Mute, missing devices, and the active **Set Output** / **Set Input** show on the
 | Clock | Clock, Date |
 | Audio | Set Output, Set Input, Fix Mic, Mic Check, EQ Preset, volume / mute, Play / Pause, skip, stop |
 | Battery | Device Battery (UPower) |
-| Bloop | Play Sound, Play / Stop, Stop All, Play Random, volume, Cable, Now Playing |
+| Bloop | Play Sound, Play / Stop, Stop All, Play Random, volume, Cable, Now Playing. Clips also appear under **Bloop / category** so you can open a folder and drop a sound onto a key. |
 | Cliamp | Play / Pause, Now Playing, skip, stop, volume, shuffle, repeat, playlist, EQ |
 
 ## Data

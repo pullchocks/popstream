@@ -23,7 +23,7 @@ KEY_MIN = 52
 KEY_MAX = 160
 
 
-def _action_from_mime(mime: QMimeData) -> tuple[str, str] | None:
+def _action_from_mime(mime: QMimeData) -> tuple[str, str, dict] | None:
     raw = ""
     if mime.hasFormat(MIME_ACTION):
         raw = bytes(mime.data(MIME_ACTION)).decode()
@@ -37,8 +37,9 @@ def _action_from_mime(mime: QMimeData) -> tuple[str, str] | None:
         return None
     plugin_id = data.get("pluginId")
     action_id = data.get("actionId")
+    settings = data.get("settings") if isinstance(data.get("settings"), dict) else {}
     if plugin_id and action_id:
-        return plugin_id, action_id
+        return plugin_id, action_id, settings
     return None
 
 
@@ -51,7 +52,7 @@ class KeyPad(QWidget):
     pressed = Signal(int)
     released = Signal(int)
     tested = Signal(int)
-    dropped_action = Signal(int, str, str)
+    dropped_action = Signal(int, str, str, dict)
     swap_with = Signal(int, int)
 
     def __init__(self, index: int, parent=None) -> None:
@@ -185,7 +186,7 @@ class KeyPad(QWidget):
         self.update()
         payload = _action_from_mime(event.mimeData())
         if payload is not None:
-            self.dropped_action.emit(self.index, payload[0], payload[1])
+            self.dropped_action.emit(self.index, payload[0], payload[1], payload[2])
             event.acceptProposedAction()
             return
         if event.mimeData().hasFormat(MIME_KEY):
@@ -330,7 +331,7 @@ class DeviceCanvas(QWidget):
             return
         payload = _action_from_mime(event.mimeData())
         if payload is not None:
-            self.engine.assign_action(key.index, payload[0], payload[1])
+            self.engine.assign_action(key.index, payload[0], payload[1], payload[2])
             event.acceptProposedAction()
             return
         if event.mimeData().hasFormat(MIME_KEY):

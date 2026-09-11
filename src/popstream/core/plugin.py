@@ -39,6 +39,7 @@ class ActionInfo:
     tooltip: str = ""
     icon: str = "grid"
     supports_title: bool = True
+    defaults: dict[str, Any] = field(default_factory=dict)
 
 
 class ActionContext:
@@ -167,6 +168,13 @@ class PluginHost:
                     self._log(traceback.format_exc())
                     return None
         return None
+
+    def refresh_actions(self) -> None:
+        for item in self.loaded:
+            try:
+                item.actions = list(item.plugin.actions())
+            except Exception:
+                self._log(traceback.format_exc())
 
     def register(self, plugin: Plugin, source: str = "builtin", driver: DeviceDriver | None = None) -> None:
         self.loaded.append(

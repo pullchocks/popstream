@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -20,6 +21,8 @@ from popstream.core.plugin import Action, ActionContext, ActionInfo, Plugin
 from popstream.ui.theme import fit_combo, plain_spin, tighten_form
 
 DEFAULT_URL = "http://127.0.0.1:17380"
+_LIB_CACHE: dict[str, Any] | None = None
+_LIB_AT = 0.0
 
 
 def _ipc_candidates() -> list[Path]:
@@ -78,7 +81,14 @@ def bloop_status() -> dict[str, Any] | None:
 
 
 def bloop_library() -> dict[str, Any] | None:
-    return bloop_request("GET", "/v1/library", timeout=1.2)
+    global _LIB_CACHE, _LIB_AT
+    now = time.monotonic()
+    if _LIB_CACHE is not None and now - _LIB_AT < 1.5:
+        return _LIB_CACHE
+    data = bloop_request("GET", "/v1/library", timeout=1.2)
+    _LIB_CACHE = data
+    _LIB_AT = now
+    return data
 
 
 def bloop_sounds() -> list[dict[str, Any]]:
@@ -142,21 +152,55 @@ class _SoundInspector(QWidget):
         self._ctx = ctx
         layout = QFormLayout(self)
         tighten_form(layout)
+        self.category = fit_combo(QComboBox())
         self.combo = fit_combo(QComboBox())
+        self.category.currentIndexChanged.connect(self._fill_sounds)
         self.combo.currentIndexChanged.connect(self._save)
         self.preview = QCheckBox("Speakers only (preview)")
         self.preview.setChecked(bool(ctx.settings.get("preview")))
         self.preview.toggled.connect(self._save)
         refresh = QPushButton("Refresh library")
         refresh.clicked.connect(self._fill)
+        layout.addRow("Category", self.category)
         layout.addRow("Sound", self.combo)
         layout.addRow("", refresh)
         layout.addRow("", self.preview)
         self._fill()
 
     def _fill(self) -> None:
+        current_id = str(self._ctx.settings.get("sound_id") or "")
+        sounds = bloop_sounds()
+        cats = bloop_categories()
+        cat_ids = []
+        self.category.blockSignals(True)
+        self.category.clear()
+        if not sounds:
+            self.category.addItem("Bloop is not running", "")
+        else:
+            self.category.addItem("All", "all")
+            for cat in cats:
+                ident = str(cat.get("id") or "")
+                if not ident or ident == "all":
+                    continue
+                name = str(cat.get("name") or ident)
+                self.category.addItem(name, ident)
+                cat_ids.append(ident)
+            wanted = "all"
+            for sound in sounds:
+                if str(sound.get("id") or "") == current_id:
+                    cid = str(sound.get("category_id") or "uncategorized")
+                    if cid in cat_ids:
+                        wanted = cid
+                    break
+            index = self.category.findData(wanted)
+            self.category.setCurrentIndex(index if index >= 0 else 0)
+        self.category.blockSignals(False)
+        self._fill_sounds()
+
+    def _fill_sounds(self) -> None:
         current = str(self._ctx.settings.get("sound_id") or "")
         sounds = bloop_sounds()
+        cat = str(self.category.currentData() or "all")
         self.combo.blockSignals(True)
         self.combo.clear()
         if not sounds:
@@ -166,6 +210,9 @@ class _SoundInspector(QWidget):
             for sound in sounds:
                 ident = str(sound.get("id") or "")
                 name = str(sound.get("name") or ident)
+                cid = str(sound.get("category_id") or "uncategorized")
+                if cat not in {"", "all"} and cid != cat:
+                    continue
                 self.combo.addItem(name, ident)
         index = self.combo.findData(current)
         self.combo.setCurrentIndex(index if index >= 0 else 0)
@@ -435,7 +482,7 @@ class BloopPlugin(Plugin):
     author = "PopStream"
 
     def actions(self) -> list[ActionInfo]:
-        return [
+        items = [
             ActionInfo("play", "Play Sound", "Bloop", "Play a Bloop clip on speakers and the virtual cable", "wave"),
             ActionInfo("play-stop", "Play / Stop", "Bloop", "Start a clip; press again to stop it", "pause"),
             ActionInfo("stop", "Stop All", "Bloop", "Stop every playing Bloop sound", "stop"),
@@ -446,10 +493,30 @@ class BloopPlugin(Plugin):
             ActionInfo("cable", "Cable", "Bloop", "Toggle the Bloop virtual cable / mic mix", "cable"),
             ActionInfo("now-playing", "Now Playing", "Bloop", "Live clip name; press to stop", "play"),
         ]
+        cats = {str(cat.get("id") or ""): str(cat.get("name") or "Category") for cat in bloop_categories()}
+        for sound in bloop_sounds():
+            ident = str(sound.get("id") or "")
+            name = str(sound.get("name") or ident)
+            if not ident:
+                continue
+            cid = str(sound.get("category_id") or "uncategorized")
+            cname = cats.get(cid) or ("Uncategorized" if cid == "uncategorized" else cid)
+            items.append(
+                ActionInfo(
+                    f"play:{ident}",
+                    name,
+                    f"Bloop / {cname}",
+                    f"Play {name}",
+                    "wave",
+                    defaults={"sound_id": ident, "sound_name": name},
+                )
+            )
+        return items
 
     def create_action(self, action_id: str) -> Action | None:
+        if action_id.startswith("play:") or action_id == "play":
+            return PlaySoundAction()
         mapping = {
-            "play": PlaySoundAction,
             "play-stop": PlayStopAction,
             "stop": StopAllAction,
             "random": PlayRandomAction,

@@ -575,14 +575,16 @@ class Engine(QObject):
             return
         self._unbind(page.id, index)
         info = self.host.find_action(plugin_id, action_id)
-        title = info.name if info else ""
-        previous_bg = page.buttons[index].background
-        previous_fg = page.buttons[index].text_color
+        if not settings:
+            settings = dict(info.defaults) if info and info.defaults else {}
         if not settings and plugin_id == self.palette_plugin_id and action_id == self.palette_action_id:
             settings = dict(self.palette_settings)
+        title = str((settings or {}).get("sound_name") or "") or (info.name if info else "")
+        previous_bg = page.buttons[index].background
+        previous_fg = page.buttons[index].text_color
         page.buttons[index] = ButtonSlot(
             plugin_id=plugin_id,
-            action_id=action_id,
+            action_id="play" if action_id.startswith("play:") else action_id,
             title=title,
             background=previous_bg,
             text_color=previous_fg,
