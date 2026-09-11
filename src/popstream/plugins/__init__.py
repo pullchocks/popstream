@@ -7,6 +7,7 @@ from popstream.plugins.cliamp import CliampPlugin
 from popstream.plugins.clock import ClockPlugin
 from popstream.plugins.navigation import NavigationPlugin
 from popstream.plugins.system import SystemPlugin
+from popstream.plugins.usage import UsagePlugin
 
 
 def builtin_plugins():
@@ -16,6 +17,7 @@ def builtin_plugins():
         ClockPlugin(),
         AudioPlugin(),
         BatteryPlugin(),
+        UsagePlugin(),
         BloopPlugin(),
         CliampPlugin(),
     ]

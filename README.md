@@ -28,6 +28,7 @@ Optional companions:
 - **Bloop**: soundboard keys (must be running)
 - **Cliamp**: music player keys (must be running)
 - **eqFX**: EQ preset keys
+- **Cursor**: Usage key (uses the account signed into the Cursor app on this machine)
 - `hyprctl` / `swaymsg` / `wmctrl`: Move to Monitor on Hyprland, Sway, or X11
 
 ## Install
@@ -77,7 +78,7 @@ Supported layouts include Mini, Original, Original V2, MK.2, XL, Plus, Neo, and 
 - **Double-click a key** (or press Space) to run the action. Presses on the physical deck always run.
 - **Drag keys** onto each other to swap them.
 - Pages sit under the canvas. Folders open a nested page; Back returns.
-- **Settings** (`Ctrl+,`) covers colors, lock-screen tiles, and profiles. Mark a default profile per deck layout; it is the one PopStream opens on launch.
+- **Settings** (`Ctrl+,`) covers colors, lock-screen tiles, plugins, and profiles. Mark a default profile per deck layout; it is the one PopStream opens on launch.
 
 Mute, missing devices, and the active **Set Output** / **Set Input** show on the icon (red or green). The key background stays as you set it.
 
@@ -92,7 +93,8 @@ Mute, missing devices, and the active **Set Output** / **Set Input** show on the
 | Clock | Clock, Date |
 | Audio | Set Output, Set Input, Fix Mic, Mic Check, EQ Preset, volume / mute, Play / Pause, skip, stop |
 | Battery | Device Battery (UPower) |
-| Bloop | Play Sound, Play / Stop, Stop All, Play Random, volume, Cable, Now Playing. Clips also appear under **Bloop / category** so you can open a folder and drop a sound onto a key. |
+| Usage | Cursor Usage (included usage this billing cycle; remaining or used) |
+| Bloop | Play Sound, Play / Stop, Stop All, Play Random, volume, Cable, Now Playing. Sound folders sit under Bloop after Now Playing so you can expand a category and drop a clip onto a key. |
 | Cliamp | Play / Pause, Now Playing, skip, stop, volume, shuffle, repeat, playlist, EQ |
 
 ## Data
@@ -101,6 +103,6 @@ Profiles and settings live under `~/.local/share/PopStream/` (`settings.json` an
 
 ## Plugins
 
-Drop a folder with `plugin.py` into `~/.local/share/PopStream/plugins/` or `./plugins/` next to this repo. The module must expose `plugin` (an action `Plugin`). It may also expose `driver` (a `DeviceDriver`) if it opens hardware.
+Drop a folder with `plugin.py` into `~/.local/share/PopStream/plugins/` or `./plugins/` next to this repo. The module must expose `plugin` (an action `Plugin`). It may also expose `driver` (a `DeviceDriver`) if it opens hardware. Settings → Plugins turns each loaded plugin on or off.
 
 See `src/popstream/core/plugin.py` and `examples/hello_plugin/`.

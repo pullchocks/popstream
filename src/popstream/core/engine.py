@@ -39,6 +39,7 @@ class Engine(QObject):
     theme_changed = Signal()
     lock_overlay_changed = Signal(bool)
     palette_changed = Signal()
+    plugins_changed = Signal()
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -232,6 +233,34 @@ class Engine(QObject):
         save_settings(settings)
         self._push_all_images()
         self.theme_changed.emit()
+
+    def plugin_enabled(self, plugin_id: str) -> bool:
+        from popstream.core.store import load_settings
+
+        raw = load_settings().get("disabled_plugins") or []
+        if not isinstance(raw, list):
+            return True
+        return plugin_id not in {str(item) for item in raw}
+
+    def set_plugin_enabled(self, plugin_id: str, enabled: bool) -> None:
+        from popstream.core.store import load_settings, save_settings
+
+        plugin_id = str(plugin_id or "").strip()
+        if not plugin_id:
+            return
+        settings = load_settings()
+        raw = settings.get("disabled_plugins") or []
+        disabled = [str(item) for item in raw] if isinstance(raw, list) else []
+        if enabled:
+            disabled = [item for item in disabled if item != plugin_id]
+        elif plugin_id not in disabled:
+            disabled.append(plugin_id)
+        settings["disabled_plugins"] = disabled
+        save_settings(settings)
+        self._release_visible()
+        self._appear_visible()
+        self._push_all_images()
+        self.plugins_changed.emit()
 
     @property
     def lock_preview(self) -> bool:
@@ -788,6 +817,9 @@ class Engine(QObject):
         slot = page.buttons[index]
         ctx = ActionContext(self, page_id, index)
         if slot.empty:
+            self._bound[self._bkey(page_id, index)] = BoundKey(None, ctx)
+            return
+        if not self.plugin_enabled(slot.plugin_id):
             self._bound[self._bkey(page_id, index)] = BoundKey(None, ctx)
             return
         info = self.host.find_action(slot.plugin_id, slot.action_id)

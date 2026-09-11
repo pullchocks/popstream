@@ -198,6 +198,22 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
         )
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(accent, max(2, size // 24)))
+    elif k in ("usage", "tokens"):
+        painter.drawEllipse(box)
+        inner = box.adjusted(box.width() * 0.18, box.height() * 0.18, -box.width() * 0.18, -box.height() * 0.18)
+        painter.drawArc(inner, 45 * 16, 270 * 16)
+        painter.setBrush(accent)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(
+            QRectF(
+                box.center().x() - box.width() * 0.08,
+                box.center().y() - box.height() * 0.08,
+                box.width() * 0.16,
+                box.height() * 0.16,
+            )
+        )
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(accent, max(2, size // 24)))
     elif k in ("eq", "eqfx", "preset"):
         bars = 5
         gap = box.width() * 0.08

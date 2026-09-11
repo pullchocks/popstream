@@ -248,7 +248,30 @@ QPushButton#categoryHeader:checked {{
     background: transparent;
     color: {C.muted};
     border: none;
+}}
+QPushButton#categoryHeaderNested {{
+    background: transparent;
+    border: none;
+    color: {C.muted};
+    text-align: left;
+    padding: 4px 2px 2px 0;
+    font-size: 10px;
+    letter-spacing: 0.6px;
     font-weight: 600;
+}}
+QPushButton#categoryHeaderNested:hover {{
+    color: {C.text};
+    border: none;
+    background: transparent;
+}}
+QPushButton#categoryHeaderNested:pressed {{
+    background: transparent;
+    border: none;
+}}
+QPushButton#categoryHeaderNested:checked {{
+    background: transparent;
+    color: {C.muted};
+    border: none;
 }}
 QPushButton#flat {{
     background: transparent;

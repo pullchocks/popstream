@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -11,6 +12,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSlider,
     QTabWidget,
     QVBoxLayout,
@@ -28,7 +30,7 @@ class SettingsDialog(QDialog):
         self.engine = engine
         self.setWindowTitle("Settings")
         self.setModal(False)
-        self.setMinimumSize(360, 280)
+        self.setMinimumSize(420, 360)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
@@ -36,6 +38,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._appearance_page(), "Appearance")
         self.lock_page = LockScreenPage(engine, self)
         tabs.addTab(self.lock_page, "Lock screen")
+        tabs.addTab(self._plugins_page(), "Plugins")
         tabs.addTab(self._profiles_page(), "Profiles")
         outer.addWidget(tabs, 1)
 
@@ -113,6 +116,56 @@ class SettingsDialog(QDialog):
         layout.addLayout(bright_row)
         layout.addStretch()
         return page
+
+    def _plugins_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 12, 8, 8)
+        hint = QLabel(
+            "Turn plugins off to hide their actions from the catalog. "
+            "Keys already on the deck stay put but will not run until the plugin is on again."
+        )
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        inner = QWidget()
+        self._plugin_list = QVBoxLayout(inner)
+        self._plugin_list.setContentsMargins(0, 8, 0, 8)
+        self._plugin_list.setSpacing(6)
+        self._plugin_boxes: list[QCheckBox] = []
+        scroll.setWidget(inner)
+        layout.addWidget(scroll, 1)
+        self._sync_plugins()
+        return page
+
+    def _sync_plugins(self) -> None:
+        from popstream.ui.catalog import SKIP_PLUGINS
+
+        while self._plugin_list.count():
+            item = self._plugin_list.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._plugin_boxes.clear()
+        rows = [
+            loaded
+            for loaded in self.engine.host.loaded
+            if loaded.plugin.id not in SKIP_PLUGINS
+        ]
+        rows.sort(key=lambda item: (item.plugin.name or item.plugin.id).lower())
+        for loaded in rows:
+            box = QCheckBox(loaded.plugin.name or loaded.plugin.id)
+            source = "Built-in" if loaded.source == "builtin" else "User plugin"
+            box.setToolTip(f"{loaded.plugin.id}\n{source}")
+            box.setChecked(self.engine.plugin_enabled(loaded.plugin.id))
+            plugin_id = loaded.plugin.id
+            box.toggled.connect(lambda on, pid=plugin_id: self.engine.set_plugin_enabled(pid, on))
+            self._plugin_list.addWidget(box)
+            self._plugin_boxes.append(box)
+        self._plugin_list.addStretch()
 
     def _profiles_page(self) -> QWidget:
         page = QWidget()

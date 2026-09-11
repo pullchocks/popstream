@@ -26,6 +26,16 @@ from popstream.ui.theme import C, MIME_ACTION
 SKIP_PLUGINS = {"com.popstream.example.hello"}
 
 
+def _split_category(name: str) -> tuple[str, str]:
+    text = (name or "").strip()
+    if " / " in text:
+        parent, child = text.split(" / ", 1)
+        parent, child = parent.strip(), child.strip()
+        if parent and child:
+            return parent, child
+    return text, ""
+
+
 def action_payload(plugin_id: str, action_id: str, settings: dict | None = None) -> bytes:
     data: dict = {"pluginId": plugin_id, "actionId": action_id}
     if settings:
@@ -140,20 +150,31 @@ class ActionTile(QFrame):
 
 
 class CategorySection(QWidget):
-    def __init__(self, name: str, collapsed: bool, on_toggle, parent=None) -> None:
+    def __init__(
+        self,
+        name: str,
+        collapsed: bool,
+        on_toggle,
+        parent=None,
+        *,
+        collapse_key: str | None = None,
+        nested: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.name = name
+        self._key = collapse_key or name
         self._collapsed = collapsed
         self._on_toggle = on_toggle
+        self._nested = nested
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(10 if nested else 0, 0, 0, 0)
         outer.setSpacing(4)
         self._header = QPushButton()
-        self._header.setObjectName("categoryHeader")
+        self._header.setObjectName("categoryHeaderNested" if nested else "categoryHeader")
         self._header.setCursor(Qt.CursorShape.PointingHandCursor)
         self._header.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._header.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._header.setMinimumHeight(28)
+        self._header.setMinimumHeight(24 if nested else 28)
         self._header.clicked.connect(self._toggle)
         self._body = QWidget()
         self.body_layout = QVBoxLayout(self._body)
@@ -169,11 +190,12 @@ class CategorySection(QWidget):
     def _toggle(self) -> None:
         self._collapsed = not self._collapsed
         self._apply()
-        self._on_toggle(self.name, self._collapsed)
+        self._on_toggle(self._key, self._collapsed)
 
     def _apply(self) -> None:
         chevron = "▸" if self._collapsed else "▾"
-        self._header.setText(f"{chevron}  {self.name.upper()}")
+        label = self.name if self._nested else self.name.upper()
+        self._header.setText(f"{chevron}  {label}")
         self._body.setVisible(not self._collapsed)
 
 
@@ -202,6 +224,7 @@ class ActionCatalog(QWidget):
         scroll.setWidget(self._inner)
         outer.addWidget(scroll, 1)
         self.engine.palette_changed.connect(self._sync_chosen)
+        self.engine.plugins_changed.connect(self.rebuild)
         self._refresh = QTimer(self)
         self._refresh.setInterval(2500)
         self._refresh.timeout.connect(self._refresh_library)
@@ -249,22 +272,39 @@ class ActionCatalog(QWidget):
         query = self.search.text().strip().lower()
         searching = bool(query)
         expanded = self._expanded()
-        groups: dict[str, list[tuple[str, object]]] = defaultdict(list)
+        groups: dict[str, dict[str, list[tuple[str, object]]]] = defaultdict(lambda: defaultdict(list))
         for loaded in self.engine.host.loaded:
             if loaded.plugin.id in SKIP_PLUGINS:
+                continue
+            if not self.engine.plugin_enabled(loaded.plugin.id):
                 continue
             for action in loaded.actions:
                 hay = f"{action.name} {action.category} {loaded.plugin.name}".lower()
                 if query and query not in hay:
                     continue
-                groups[action.category].append((loaded.plugin.id, action))
-        for category in sorted(groups):
-            collapsed = not searching and category not in expanded
-            section = CategorySection(category, collapsed, self._set_collapsed)
-            for plugin_id, action in groups[category]:
+                parent, child = _split_category(action.category)
+                groups[parent][child].append((loaded.plugin.id, action))
+        for parent in sorted(groups):
+            collapsed = not searching and parent not in expanded
+            section = CategorySection(parent, collapsed, self._set_collapsed)
+            for plugin_id, action in groups[parent].get("", []):
                 tile = ActionTile(plugin_id, action, self)
                 section.add_tile(tile)
                 self._tiles.append(tile)
+            for child in sorted(key for key in groups[parent] if key):
+                nest_key = f"{parent} / {child}"
+                nested = CategorySection(
+                    child,
+                    not searching and nest_key not in expanded,
+                    self._set_collapsed,
+                    collapse_key=nest_key,
+                    nested=True,
+                )
+                for plugin_id, action in groups[parent][child]:
+                    tile = ActionTile(plugin_id, action, self)
+                    nested.add_tile(tile)
+                    self._tiles.append(tile)
+                section.add_tile(nested)
             self._layout.addWidget(section)
         self._layout.addStretch()
         self._sync_chosen()
