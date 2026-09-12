@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from popstream.core.engine import Engine
+from popstream.core.store import close_to_tray, set_close_to_tray
 from popstream.ui.lock_dialog import LockScreenPage
 from popstream.ui.theme import C, ColorSwatch
 
@@ -35,6 +36,7 @@ class SettingsDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
         tabs = QTabWidget()
+        tabs.addTab(self._general_page(), "General")
         tabs.addTab(self._appearance_page(), "Appearance")
         self.lock_page = LockScreenPage(engine, self)
         tabs.addTab(self.lock_page, "Lock screen")
@@ -55,6 +57,28 @@ class SettingsDialog(QDialog):
         self._sync_theme()
         self._sync_brightness(engine.profile.brightness if engine.profile else 70)
         self._refresh_profile_list()
+
+    def _general_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 12, 8, 8)
+        layout.setSpacing(10)
+        self.close_to_tray = QCheckBox("Keep PopStream in the tray when the window is closed")
+        self.close_to_tray.setToolTip(
+            "The Stream Deck keeps working. Quit from the tray menu to exit fully."
+        )
+        self.close_to_tray.setChecked(close_to_tray())
+        self.close_to_tray.toggled.connect(set_close_to_tray)
+        hint = QLabel(
+            "On by default. Closing or minimizing the window hides it; "
+            "the deck stays live. Turn this off if close should quit PopStream."
+        )
+        hint.setObjectName("hint")
+        hint.setWordWrap(True)
+        layout.addWidget(self.close_to_tray)
+        layout.addWidget(hint)
+        layout.addStretch(1)
+        return page
 
     def _appearance_page(self) -> QWidget:
         page = QWidget()

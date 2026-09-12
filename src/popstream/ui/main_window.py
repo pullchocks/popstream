@@ -4,7 +4,6 @@ from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -12,7 +11,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMenu,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -25,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from popstream.core.engine import Engine
 from popstream.core.icons import application_icon, tray_icon
-from popstream.core.store import load_settings, save_settings
+from popstream.core.store import close_to_tray, load_settings, save_settings
 from popstream.ui.canvas import DeviceCanvas
 from popstream.ui.catalog import ActionCatalog
 from popstream.ui.inspector import PropertyInspector
@@ -304,8 +302,7 @@ class MainWindow(QMainWindow):
             self._show_from_tray()
 
     def _show_from_tray(self) -> None:
-        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
-        self.show()
+        self.showNormal()
         self.raise_()
         self.activateWindow()
         # Wayland often ignores activateWindow; nudge Hyprland when available.
@@ -339,7 +336,6 @@ class MainWindow(QMainWindow):
             return
         self._hiding_to_tray = True
         self.hide()
-        self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
         self._hiding_to_tray = False
         settings = load_settings()
         if not settings.get("tray_hint_shown") and self.tray is not None:
@@ -366,44 +362,17 @@ class MainWindow(QMainWindow):
             return
         if self._hiding_to_tray or self._force_quit:
             return
-        if self.isMinimized() and self._tray_available():
+        if self.isMinimized() and close_to_tray() and self._tray_available():
             QTimer.singleShot(0, self._hide_to_tray)
 
     def closeEvent(self, event) -> None:
-        if self._force_quit or not self._tray_available():
+        if self._force_quit or not close_to_tray() or not self._tray_available():
             event.accept()
             app = QApplication.instance()
             if app is not None:
                 app.quit()
             return
-        if load_settings().get("close_to_tray"):
-            event.ignore()
-            self._hide_to_tray()
-            return
-        box = QMessageBox(self)
-        box.setWindowTitle("PopStream")
-        box.setText("Keep PopStream running in the tray so the Stream Deck still works?")
-        box.setInformativeText("Quit only if you want to stop the deck.")
-        tray_btn = box.addButton("Minimize to tray", QMessageBox.ButtonRole.AcceptRole)
-        quit_btn = box.addButton("Quit", QMessageBox.ButtonRole.DestructiveRole)
-        always = QCheckBox("Always minimize to tray")
-        box.setCheckBox(always)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is quit_btn:
-            self._force_quit = True
-            event.accept()
-            app = QApplication.instance()
-            if app is not None:
-                QTimer.singleShot(0, app.quit)
-            return
         event.ignore()
-        if clicked is not tray_btn:
-            return
-        if always.isChecked():
-            settings = load_settings()
-            settings["close_to_tray"] = True
-            save_settings(settings)
         self._hide_to_tray()
 
     def _open_settings(self) -> None:

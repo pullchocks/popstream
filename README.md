@@ -54,7 +54,7 @@ Then:
 python3 run.py
 ```
 
-Or open **PopStream** from the app menu. After login it starts hidden in the tray. Look for the tray icon (Hyprland/Omarchy: top bar), or launch again to raise the window. Closing the window can minimize to the tray so the deck keeps working.
+Or open **PopStream** from the app menu. After login it starts hidden in the tray. Look for the tray icon (Hyprland/Omarchy: top bar), or launch again to raise the window. Closing the window hides to the tray by default so the deck keeps working; that is Settings → General.
 
 Skip hardware rules if you only want the editor:
 
@@ -78,7 +78,7 @@ Supported layouts include Mini, Original, Original V2, MK.2, XL, Plus, Neo, and 
 - **Double-click a key** (or press Space) to run the action. Presses on the physical deck always run.
 - **Drag keys** onto each other to swap them.
 - Pages sit under the canvas. Folders open a nested page; Back returns.
-- **Settings** (`Ctrl+,`) covers colors, lock-screen tiles, plugins, and profiles. Mark a default profile per deck layout; it is the one PopStream opens on launch.
+- **Settings** (`Ctrl+,`) covers general (keep in tray), colors, lock-screen tiles, plugins, and profiles. Mark a default profile per deck layout; it is the one PopStream opens on launch.
 
 Mute, missing devices, and the active **Set Output** / **Set Input** show on the icon (red or green). The key background stays as you set it.
 

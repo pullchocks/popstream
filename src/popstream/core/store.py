@@ -85,6 +85,16 @@ def save_settings(data: dict) -> None:
     settings_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def close_to_tray() -> bool:
+    return bool(load_settings().get("close_to_tray", True))
+
+
+def set_close_to_tray(enabled: bool) -> None:
+    settings = load_settings()
+    settings["close_to_tray"] = bool(enabled)
+    save_settings(settings)
+
+
 class ProfileStore:
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or profiles_dir()
