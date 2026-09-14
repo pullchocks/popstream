@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
@@ -41,7 +41,6 @@ class MainWindow(QMainWindow):
         self._syncing = False
         self._settings = None
         self._force_quit = False
-        self._hiding_to_tray = False
         self.setWindowIcon(application_icon())
         self._setup_tray()
 
@@ -270,10 +269,10 @@ class MainWindow(QMainWindow):
         self._style_banner()
 
     def _setup_tray(self) -> None:
-        self.tray: QSystemTrayIcon | None = None
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            return
-        self.tray = QSystemTrayIcon(tray_icon(), self)
+        # Always create the icon. isSystemTrayAvailable() is often false at
+        # login on Hyprland/Omarchy before the bar's StatusNotifier host is up.
+        app = QApplication.instance()
+        self.tray = QSystemTrayIcon(tray_icon(), app if app is not None else self)
         self.tray.setToolTip("PopStream")
         menu = QMenu()
         open_act = QAction("Open PopStream", self)
@@ -289,6 +288,20 @@ class MainWindow(QMainWindow):
         self.tray.setContextMenu(menu)
         self.tray.activated.connect(self._tray_activated)
         self.tray.show()
+        self._tray_tries = 0
+        self._tray_retry = QTimer(self)
+        self._tray_retry.setInterval(400)
+        self._tray_retry.timeout.connect(self._ensure_tray)
+        self._tray_retry.start()
+
+    def _ensure_tray(self) -> None:
+        if self.tray is None:
+            return
+        if not self.tray.isVisible():
+            self.tray.show()
+        self._tray_tries += 1
+        if QSystemTrayIcon.isSystemTrayAvailable() or self._tray_tries >= 50:
+            self._tray_retry.stop()
 
     def _tray_available(self) -> bool:
         return self.tray is not None and self.tray.isVisible()
@@ -333,10 +346,9 @@ class MainWindow(QMainWindow):
 
     def _hide_to_tray(self) -> None:
         if not self._tray_available():
+            self.show()
             return
-        self._hiding_to_tray = True
         self.hide()
-        self._hiding_to_tray = False
         settings = load_settings()
         if not settings.get("tray_hint_shown") and self.tray is not None:
             self.tray.showMessage(
@@ -355,15 +367,6 @@ class MainWindow(QMainWindow):
             app.quit()
         else:
             self.close()
-
-    def changeEvent(self, event) -> None:
-        super().changeEvent(event)
-        if event.type() != QEvent.Type.WindowStateChange:
-            return
-        if self._hiding_to_tray or self._force_quit:
-            return
-        if self.isMinimized() and close_to_tray() and self._tray_available():
-            QTimer.singleShot(0, self._hide_to_tray)
 
     def closeEvent(self, event) -> None:
         if self._force_quit or not close_to_tray() or not self._tray_available():

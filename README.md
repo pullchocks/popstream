@@ -54,7 +54,7 @@ Then:
 python3 run.py
 ```
 
-Or open **PopStream** from the app menu. After login it starts hidden in the tray. Look for the tray icon (Hyprland/Omarchy: top bar), or launch again to raise the window. Closing the window hides to the tray by default so the deck keeps working; that is Settings → General.
+Or open **PopStream** from the app menu. After login the window opens and the tray icon stays in the top bar. Closing the window hides to the tray by default so the deck keeps working; that is Settings → General.
 
 Skip hardware rules if you only want the editor:
 

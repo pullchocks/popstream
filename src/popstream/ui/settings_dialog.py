@@ -70,8 +70,9 @@ class SettingsDialog(QDialog):
         self.close_to_tray.setChecked(close_to_tray())
         self.close_to_tray.toggled.connect(set_close_to_tray)
         hint = QLabel(
-            "On by default. Closing or minimizing the window hides it; "
-            "the deck stays live. Turn this off if close should quit PopStream."
+            "On by default. Closing the window hides it to the tray; "
+            "the deck stays live. The tray icon stays visible. "
+            "Turn this off if close should quit PopStream."
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
