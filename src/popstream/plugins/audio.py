@@ -103,6 +103,7 @@ def _snapshot(*, force: bool = False) -> dict[str, Any]:
         "sinks": _json_list("sinks"),
         "sources": _json_list("sources"),
         "sink_inputs": _json_list("sink-inputs"),
+        "source_outputs": _json_list("source-outputs"),
         "default_sink": _pactl("get-default-sink")[1],
         "default_source": _pactl("get-default-source")[1],
         "alsa_cap": {},
@@ -124,6 +125,9 @@ WANTED_OUTPUT_PATH = EQFX_DIR / "wanted-output"
 DEVICE_VOLUMES_PATH = EQFX_DIR / "device_volumes.json"
 WANTED_PRESET_PATH = EQFX_DIR / "wanted-preset"
 EQFX_SETTINGS_PATH = EQFX_DIR / "settings.json"
+HUSH_SOURCE_NAMES = {"hush.source"}
+HUSH_CAPTURE_NAME = "hush.capture"
+_PENDING_EQFX_PRESET = ""
 
 
 def _is_eqfx_sink(name: str, desc: str = "") -> bool:
@@ -133,6 +137,11 @@ def _is_eqfx_sink(name: str, desc: str = "") -> bool:
         or name.startswith("minieq.")
         or desc in {"eqFX", "MiniEQ"}
     )
+
+
+def _is_hush_source(name: str, desc: str = "") -> bool:
+    blob = f"{name} {desc}".strip().lower()
+    return name in HUSH_SOURCE_NAMES or name.startswith("hush.") or blob == "hush"
 
 
 def list_sinks() -> list[tuple[str, str]]:
@@ -224,9 +233,11 @@ def peek_wanted_output() -> str:
 
 
 def _write_wanted_preset(preset_id: str) -> None:
+    global _PENDING_EQFX_PRESET
     try:
         WANTED_PRESET_PATH.parent.mkdir(parents=True, exist_ok=True)
         WANTED_PRESET_PATH.write_text(preset_id, encoding="utf-8")
+        _PENDING_EQFX_PRESET = preset_id
     except OSError:
         pass
 
@@ -301,11 +312,18 @@ def preset_label(preset_id: str) -> str:
 
 
 def active_eqfx_preset() -> str:
+    global _PENDING_EQFX_PRESET
     wanted = peek_wanted_preset()
     if wanted:
+        _PENDING_EQFX_PRESET = wanted
         return wanted
     settings = _eqfx_settings()
     current = str(settings.get("preset_id") or "").strip()
+    if _PENDING_EQFX_PRESET:
+        if current == _PENDING_EQFX_PRESET:
+            _PENDING_EQFX_PRESET = ""
+        else:
+            return _PENDING_EQFX_PRESET
     if current:
         return current
     if settings.get("remember_per_device"):
@@ -600,6 +618,9 @@ def _wpctl_muted(node_id: str) -> bool | None:
 
 
 def endpoint_muted(kind: str, name: str, entry: dict[str, Any] | None) -> bool:
+    desc = str((entry or {}).get("description") or "")
+    if kind == "source" and _is_hush_source(name, desc):
+        return _hush_chain_muted()
     if entry is not None and "mute" in entry:
         if bool(entry.get("mute")):
             return True
@@ -622,6 +643,17 @@ def endpoint_muted(kind: str, name: str, entry: dict[str, Any] | None) -> bool:
 
 
 def set_endpoint_mute(kind: str, name: str, entry: dict[str, Any] | None, muted: bool) -> bool:
+    desc = str((entry or {}).get("description") or "")
+    if kind == "source" and _is_hush_source(name, desc):
+        ok = _set_hush_chain_mute(muted)
+        _invalidate_snap()
+        return ok
+    ok = _mute_device(kind, name, entry, muted)
+    _invalidate_snap()
+    return ok or endpoint_muted(kind, name, entry) is muted
+
+
+def _mute_device(kind: str, name: str, entry: dict[str, Any] | None, muted: bool) -> bool:
     flag = "1" if muted else "0"
     if kind == "sink":
         code, _ = _pactl("set-sink-mute", name, flag)
@@ -634,8 +666,86 @@ def set_endpoint_mute(kind: str, name: str, entry: dict[str, Any] | None, muted:
         card = _alsa_card(entry)
         if card:
             _set_alsa_capture(card, muted)
-    _invalidate_snap()
-    return code == 0 or endpoint_muted(kind, name, entry) is muted
+    return code == 0 or (
+        (_muted(name) if kind == "sink" else _source_muted(name)) is muted
+    )
+
+
+def _hush_hardware_name() -> str:
+    outputs = _snapshot().get("source_outputs") or []
+    sources = {
+        item.get("index"): str(item.get("name") or "")
+        for item in _live_rows("source")
+        if isinstance(item, dict) and item.get("index") is not None
+    }
+    for item in outputs:
+        if not isinstance(item, dict):
+            continue
+        props = item.get("properties") if isinstance(item.get("properties"), dict) else {}
+        if str(props.get("node.name") or "") != HUSH_CAPTURE_NAME:
+            continue
+        name = sources.get(item.get("source"), "")
+        if name and not _is_hush_source(name) and not name.endswith(".monitor"):
+            return name
+    return ""
+
+
+def _mute_hush_capture_streams(muted: bool) -> None:
+    flag = "1" if muted else "0"
+    outputs = _snapshot().get("source_outputs") or _json_list("source-outputs")
+    for item in outputs:
+        if not isinstance(item, dict):
+            continue
+        props = item.get("properties") if isinstance(item.get("properties"), dict) else {}
+        if str(props.get("node.name") or "") != HUSH_CAPTURE_NAME:
+            continue
+        index = item.get("index")
+        if index is not None:
+            _pactl("set-source-output-mute", str(index), flag)
+        oid = props.get("object.id")
+        if oid is not None and str(oid) != "":
+            _wpctl("set-mute", str(oid), flag)
+
+
+def _hush_chain_muted() -> bool:
+    hush = _find_device("source", "hush.source")
+    if _source_muted("hush.source"):
+        return True
+    if hush is not None:
+        node = _node_id(hush)
+        if node:
+            cached = _snapshot().setdefault("wpctl_mute", {})
+            if node not in cached:
+                cached[node] = _wpctl_muted(node)
+            if cached[node] is True:
+                return True
+    hardware = _hush_hardware_name()
+    if not hardware:
+        return False
+    entry = _find_device("source", hardware)
+    pulse = _source_muted(hardware)
+    if pulse:
+        return True
+    card = _alsa_card(entry)
+    if card:
+        alsa = _snapshot().setdefault("alsa_cap", {})
+        if card not in alsa:
+            alsa[card] = _alsa_capture_muted(card)
+        if alsa[card] is True:
+            return True
+    return False
+
+
+def _set_hush_chain_mute(muted: bool) -> bool:
+    _snapshot(force=True)
+    hush = _find_device("source", "hush.source")
+    ok = _mute_device("source", "hush.source", hush, muted)
+    _mute_hush_capture_streams(muted)
+    hardware = _hush_hardware_name()
+    if hardware:
+        hw_entry = _find_device("source", hardware)
+        ok = _mute_device("source", hardware, hw_entry, muted) or ok
+    return ok
 
 
 def toggle_endpoint_mute(kind: str, settings: dict[str, Any]) -> bool:
@@ -644,6 +754,8 @@ def toggle_endpoint_mute(kind: str, settings: dict[str, Any]) -> bool:
     if not name:
         return False
     entry = _find_device(kind, name)
+    if kind == "source" and _is_hush_source(name, str((entry or {}).get("description") or "")):
+        return set_endpoint_mute(kind, name, entry, not _hush_chain_muted())
     return set_endpoint_mute(kind, name, entry, not endpoint_muted(kind, name, entry))
 
 
@@ -1078,7 +1190,7 @@ class SetEqPresetAction(_LiveAction):
             ctx.show_ok()
         else:
             ctx.show_alert()
-        self.update_visual(ctx)
+        _LiveAction._tick_all()
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
         return _PresetInspector(ctx, parent)
@@ -1197,7 +1309,7 @@ class MuteMicAction(_LiveAction):
     def key_down(self, ctx: ActionContext) -> None:
         if not toggle_endpoint_mute("source", ctx.settings):
             ctx.show_alert()
-        self.update_visual(ctx)
+        _LiveAction._tick_all()
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
         return _DeviceInspector(ctx, "source", parent)

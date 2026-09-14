@@ -602,22 +602,20 @@ class Engine(QObject):
         page = self.current_page()
         if page is None or not (0 <= index < len(page.buttons)):
             return
+        if self._is_folder_slot(page.buttons[index]):
+            resolved = self._resolve_folder_drop(index)
+            if resolved is None:
+                return
+            folder_page, dest = resolved
+            folder_page.buttons[dest] = self._build_assigned_slot(
+                plugin_id, action_id, settings, folder_page.buttons[dest]
+            )
+            self._commit_folder_drop(folder_page, dest)
+            self.select_key(index)
+            return
         self._unbind(page.id, index)
-        info = self.host.find_action(plugin_id, action_id)
-        if not settings:
-            settings = dict(info.defaults) if info and info.defaults else {}
-        if not settings and plugin_id == self.palette_plugin_id and action_id == self.palette_action_id:
-            settings = dict(self.palette_settings)
-        title = str((settings or {}).get("sound_name") or "") or (info.name if info else "")
-        previous_bg = page.buttons[index].background
-        previous_fg = page.buttons[index].text_color
-        page.buttons[index] = ButtonSlot(
-            plugin_id=plugin_id,
-            action_id="play" if action_id.startswith("play:") else action_id,
-            title=title,
-            background=previous_bg,
-            text_color=previous_fg,
-            settings=dict(settings or {}),
+        page.buttons[index] = self._build_assigned_slot(
+            plugin_id, action_id, settings, page.buttons[index]
         )
         self._bind(page.id, index)
         self.schedule_save()
@@ -642,7 +640,20 @@ class Engine(QObject):
         page = self.current_page()
         if page is None:
             return
+        if a == b:
+            return
         if not (0 <= a < len(page.buttons) and 0 <= b < len(page.buttons)):
+            return
+        if self._is_folder_slot(page.buttons[b]):
+            if page.buttons[a].empty:
+                return
+            resolved = self._resolve_folder_drop(b)
+            if resolved is None:
+                return
+            folder_page, dest = resolved
+            folder_page.buttons[dest] = page.buttons[a].copy()
+            self._commit_folder_drop(folder_page, dest)
+            self.clear_key(a)
             return
         self._unbind(page.id, a)
         self._unbind(page.id, b)
@@ -654,6 +665,73 @@ class Engine(QObject):
         self._render_key(b)
         self.key_visual_changed.emit(a)
         self.key_visual_changed.emit(b)
+
+    def _is_folder_slot(self, slot: ButtonSlot | None) -> bool:
+        return bool(slot and slot.plugin_id == "com.popstream.navigation" and slot.action_id == "folder")
+
+    def _folder_page_for_slot(self, slot: ButtonSlot) -> Page | None:
+        if self.profile is None:
+            return None
+        page_id = str(slot.settings.get("page_id") or "")
+        page = self.profile.page_by_id(page_id) if page_id else None
+        if page is None:
+            name = str(slot.settings.get("name") or "Folder")
+            page_id = self.create_folder_page(name)
+            if not page_id:
+                return None
+            slot.settings["page_id"] = page_id
+            page = self.profile.page_by_id(page_id)
+        if page is not None:
+            page.ensure_size(self.current_spec().key_count)
+        return page
+
+    def _resolve_folder_drop(self, folder_index: int) -> tuple[Page, int] | None:
+        page = self.current_page()
+        if page is None or not (0 <= folder_index < len(page.buttons)):
+            return None
+        folder_slot = page.buttons[folder_index]
+        if not self._is_folder_slot(folder_slot):
+            return None
+        folder_page = self._folder_page_for_slot(folder_slot)
+        if folder_page is None:
+            return None
+        dest = next((i for i, button in enumerate(folder_page.buttons) if button.empty), None)
+        if dest is None:
+            self.log("This folder has no free slots")
+            self.show_alert(page.id, folder_index)
+            return None
+        return folder_page, dest
+
+    def _build_assigned_slot(
+        self,
+        plugin_id: str,
+        action_id: str,
+        settings: dict | None,
+        previous: ButtonSlot,
+    ) -> ButtonSlot:
+        info = self.host.find_action(plugin_id, action_id)
+        if not settings:
+            settings = dict(info.defaults) if info and info.defaults else {}
+        if not settings and plugin_id == self.palette_plugin_id and action_id == self.palette_action_id:
+            settings = dict(self.palette_settings)
+        title = str((settings or {}).get("sound_name") or "") or (info.name if info else "")
+        return ButtonSlot(
+            plugin_id=plugin_id,
+            action_id="play" if action_id.startswith("play:") else action_id,
+            title=title,
+            background=previous.background,
+            text_color=previous.text_color,
+            settings=dict(settings or {}),
+        )
+
+    def _commit_folder_drop(self, folder_page: Page, dest: int) -> None:
+        current = self.current_page()
+        if current is not None and current.id == folder_page.id:
+            self._bind(folder_page.id, dest)
+            self._render_key(dest)
+            self.key_visual_changed.emit(dest)
+        self.schedule_save()
+        self.log("Placed in folder")
 
     def update_slot(self, index: int, **fields: Any) -> None:
         slot = self.slot_at(index)
