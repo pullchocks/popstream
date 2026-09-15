@@ -27,6 +27,7 @@ class LockScreenPage(QWidget):
         hint = QLabel(
             "When this computer is locked, PopStream can take over the Stream Deck. "
             "Date & time spreads across the keys (AUG 30 / 11 : 33 / PM). "
+            "That follows the Linux session lock, not one desktop. "
             "Preview it here without locking."
         )
         hint.setObjectName("hint")

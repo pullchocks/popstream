@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
+import shutil
 import subprocess
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal, Slot
@@ -27,6 +30,28 @@ from popstream.ui.theme import C
 
 LOCK_MODES = ("clock", "image", "screensaver")
 _DBUS_TIMEOUT_MS = 400
+SCREENSAVER_DBUS = (
+    ("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver"),
+    ("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver"),
+    ("org.gnome.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.gnome.ScreenSaver"),
+    ("org.cinnamon.ScreenSaver", "/org/cinnamon/ScreenSaver", "org.cinnamon.ScreenSaver"),
+    ("org.mate.ScreenSaver", "/org/mate/ScreenSaver", "org.mate.ScreenSaver"),
+    ("org.xfce.ScreenSaver", "/org/xfce/ScreenSaver", "org.xfce.ScreenSaver"),
+    ("org.kde.screensaver", "/ScreenSaver", "org.freedesktop.ScreenSaver"),
+    ("org.kde.ksmserver", "/ScreenSaver", "org.freedesktop.ScreenSaver"),
+)
+# Processes that exist only while a lock screen is showing.
+LOCKER_COMMS = {
+    "hyprlock",
+    "swaylock",
+    "waylock",
+    "gtklock",
+    "i3lock",
+    "i3lock-color",
+    "slock",
+    "physlock",
+    "kscreenlocker_greet",
+}
 
 
 def _dbus_call(bus, message):
@@ -101,6 +126,56 @@ def cosmic_lock_paths(runtime: str | None = None, session_id: str | None = None)
 
 def cosmic_session_locked(runtime: str | None = None, session_id: str | None = None) -> bool:
     return any(os.path.exists(path) for path in cosmic_lock_paths(runtime, session_id))
+
+
+def hyprland_session_locked(monitors: Any) -> bool | None:
+    """True when Hyprland holds an ext-session-lock, False if unlocked, else None.
+
+    Hyprland has no lock query. An active session lock is reported as LOCK in
+    each monitor's solitaryBlockedBy list. WORKSPACE on every output means we
+    cannot tell yet.
+    """
+    if not isinstance(monitors, list) or not monitors:
+        return None
+    saw_lock = False
+    saw_readable = False
+    for row in monitors:
+        if not isinstance(row, dict):
+            continue
+        blockers = row.get("solitaryBlockedBy") or []
+        if not isinstance(blockers, list):
+            blockers = []
+        tokens = {str(item) for item in blockers}
+        if "LOCK" in tokens:
+            saw_lock = True
+        if "WORKSPACE" not in tokens:
+            saw_readable = True
+    if saw_lock:
+        return True
+    if saw_readable:
+        return False
+    return None
+
+
+def locker_process_running(uid: int | None = None) -> bool:
+    """True when a known lock-screen process is running as this user."""
+    want = os.getuid() if uid is None else uid
+    try:
+        for entry in os.scandir("/proc"):
+            if not entry.name.isdigit():
+                continue
+            try:
+                if os.stat(entry.path).st_uid != want:
+                    continue
+                comm = Path(entry.path, "comm").read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            name = comm.split("\x00", 1)[0]
+            if name in LOCKER_COMMS:
+                return True
+    except OSError:
+        return False
+    return False
 
 
 def default_lock_config() -> dict[str, Any]:
@@ -349,13 +424,13 @@ def _slice(canvas: QImage, spec: DeviceSpec) -> list[QImage]:
 
 
 class LockMonitor(QObject):
-    """Watch screen lock on GNOME, KDE, and COSMIC.
+    """Watch the Linux session lock and tell PopStream when to take over the deck.
 
-    COSMIC never sets logind LockedHint and does not implement
-    org.freedesktop.ScreenSaver.GetActive. It does emit logind Session.Lock
-    (not Unlock) and writes $XDG_RUNTIME_DIR/cosmic-greeter-$XDG_SESSION_ID.lock
-    while the greeter is up. Apps launched from Cursor or systemd --user also
-    fail GetSessionByPID, so we resolve the seat session by XDG_SESSION_ID.
+    Desktops disagree: some set logind LockedHint, some implement
+    org.freedesktop.ScreenSaver, COSMIC writes a greeter lockfile, Hyprland
+    reports ext-session-lock as LOCK on each monitor, and many lockers are
+    just a process (swaylock, hyprlock, gtklock, i3lock, kscreenlocker).
+    We listen to all of those so the overlay follows the lock on typical Linux.
     """
 
     locked_changed = Signal(bool)
@@ -367,6 +442,10 @@ class LockMonitor(QObject):
         self._awaiting_lockfile = False
         self._lock_armed_until = 0.0
         self._screensaver_get_active = True
+        self._have_hyprctl = shutil.which("hyprctl") is not None
+        self._have_omarchy_shell = shutil.which("omarchy-shell") is not None
+        self._have_xscreensaver = shutil.which("xscreensaver-command") is not None
+        self._have_xdg_screensaver = shutil.which("xdg-screensaver") is not None
         self._connect_signals()
         self._poll = QTimer(self)
         self._poll.setInterval(400)
@@ -393,11 +472,7 @@ class LockMonitor(QObject):
         try:
             session = QDBusConnection.sessionBus()
             if session.isConnected():
-                for service, path, interface in (
-                    ("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver"),
-                    ("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver"),
-                    ("org.gnome.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.gnome.ScreenSaver"),
-                ):
+                for service, path, interface in SCREENSAVER_DBUS:
                     session.connect(
                         service,
                         path,
@@ -529,9 +604,17 @@ class LockMonitor(QObject):
         if file_locked:
             self._awaiting_lockfile = False
             self._lock_armed_until = 0.0
-        locked = file_locked
+        locked = file_locked or locker_process_running()
         if not locked:
-            for reader in (self._gnome_active, self._logind_hint, self._loginctl_hint):
+            for reader in (
+                self._hyprland_locked,
+                self._omarchy_locked,
+                self._screensaver_active,
+                self._logind_hint,
+                self._loginctl_hint,
+                self._xdg_screensaver,
+                self._xscreensaver_locked,
+            ):
                 try:
                     value = reader()
                 except Exception:
@@ -547,7 +630,52 @@ class LockMonitor(QObject):
         self._awaiting_lockfile = False
         self._set_locked(False)
 
-    def _gnome_active(self) -> bool | None:
+    def _hyprland_locked(self) -> bool | None:
+        if not self._have_hyprctl or not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            return None
+        try:
+            result = subprocess.run(
+                ["hyprctl", "-j", "monitors"],
+                capture_output=True,
+                text=True,
+                timeout=0.8,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            self._have_hyprctl = False
+            return None
+        if result.returncode != 0 or not (result.stdout or "").strip():
+            return None
+        try:
+            rows = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
+        return hyprland_session_locked(rows)
+
+    def _omarchy_locked(self) -> bool | None:
+        if not self._have_omarchy_shell:
+            return None
+        env = os.environ.copy()
+        env.setdefault("OMARCHY_SHELL_IPC_TIMEOUT", "0.4s")
+        try:
+            result = subprocess.run(
+                ["omarchy-shell", "lock", "isLocked"],
+                capture_output=True,
+                text=True,
+                timeout=0.6,
+                check=False,
+                env=env,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+        text = (result.stdout or "").strip().lower()
+        if text in {"true", "yes", "1"}:
+            return True
+        if text in {"false", "no", "0"}:
+            return False
+        return None
+
+    def _screensaver_active(self) -> bool | None:
         if not self._screensaver_get_active:
             return None
         try:
@@ -558,10 +686,7 @@ class LockMonitor(QObject):
         bus = QDBusConnection.sessionBus()
         if not bus.isConnected():
             return None
-        for service, path, interface in (
-            ("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver"),
-            ("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver"),
-        ):
+        for service, path, interface in SCREENSAVER_DBUS:
             msg = QDBusMessage.createMethodCall(service, path, interface, "GetActive")
             reply = _dbus_call(bus, msg)
             if reply.errorName():
@@ -572,6 +697,48 @@ class LockMonitor(QObject):
                 if parsed is not None:
                     return parsed
         self._screensaver_get_active = False
+        return None
+
+    def _xdg_screensaver(self) -> bool | None:
+        if not self._have_xdg_screensaver:
+            return None
+        try:
+            result = subprocess.run(
+                ["xdg-screensaver", "status"],
+                capture_output=True,
+                text=True,
+                timeout=0.6,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            self._have_xdg_screensaver = False
+            return None
+        text = (result.stdout or "").strip().lower()
+        if text == "enabled":
+            return True
+        if text == "disabled":
+            return False
+        return None
+
+    def _xscreensaver_locked(self) -> bool | None:
+        if not self._have_xscreensaver:
+            return None
+        try:
+            result = subprocess.run(
+                ["xscreensaver-command", "-time"],
+                capture_output=True,
+                text=True,
+                timeout=0.6,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            self._have_xscreensaver = False
+            return None
+        blob = f"{result.stdout or ''} {result.stderr or ''}".lower()
+        if "locked" in blob:
+            return True
+        if "non-blanked" in blob or "not blanked" in blob:
+            return False
         return None
 
     def _logind_hint(self) -> bool | None:

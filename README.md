@@ -9,7 +9,7 @@ Needs a typical Linux desktop with:
 - PipeWire or PulseAudio (`pactl`) for the Audio actions
 - A freedesktop tray / StatusNotifier host (GNOME, COSMIC, KDE, Hyprland, and similar)
 
-Lock-screen tiles and some desktop integrations work best where logind or a ScreenSaver D-Bus API is available; elsewhere those features degrade gracefully.
+Lock-screen tiles follow the session lock on Linux (logind, ScreenSaver D-Bus, Hyprland, common lockers).
 
 ## Requirements
 
