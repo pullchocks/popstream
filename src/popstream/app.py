@@ -83,9 +83,10 @@ def main(argv: list[str] | None = None) -> int:
 
     window = MainWindow(engine)
     server.newConnection.connect(window._show_from_tray)
-    window.show()
     if start_in_tray:
-        window._hide_to_tray()
+        window.hide()
+    else:
+        window.show()
     return app.exec()
 
 
