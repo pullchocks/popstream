@@ -128,6 +128,7 @@ EQFX_SETTINGS_PATH = EQFX_DIR / "settings.json"
 HUSH_SOURCE_NAMES = {"hush.source"}
 HUSH_CAPTURE_NAME = "hush.capture"
 _PENDING_EQFX_PRESET = ""
+_PENDING_OUTPUT = ""
 
 
 def _is_eqfx_sink(name: str, desc: str = "") -> bool:
@@ -216,9 +217,11 @@ def _eqfx_sink_name() -> str:
 
 
 def _write_wanted_output(name: str) -> None:
+    global _PENDING_OUTPUT
     try:
         WANTED_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
         WANTED_OUTPUT_PATH.write_text(name, encoding="utf-8")
+        _PENDING_OUTPUT = name
     except OSError:
         pass
 
@@ -367,9 +370,18 @@ def eqfx_playback_sink() -> str:
 
 def active_output_sink() -> str:
     """Hardware speakers/headphones currently in use, even when eqFX is default."""
+    global _PENDING_OUTPUT
+    if _PENDING_OUTPUT:
+        live = pick_live_name("sink", _PENDING_OUTPUT) or _PENDING_OUTPUT
+        playing = eqfx_playback_sink()
+        current = default_sink()
+        hardware = playing or (current if current and not _is_eqfx_sink(current) else "")
+        if hardware and hardware == live:
+            _PENDING_OUTPUT = ""
+        return live
     wanted = peek_wanted_output()
     if wanted:
-        return wanted
+        return pick_live_name("sink", wanted) or wanted
     playing = eqfx_playback_sink()
     if playing:
         return playing
@@ -398,6 +410,7 @@ def _move_eqfx_playback(hardware: str) -> bool:
 
 
 def set_default_sink(name: str) -> bool:
+    global _PENDING_OUTPUT
     name = pick_live_name("sink", name) or name
     eq = _eqfx_sink_name()
     if eq and name and not _is_eqfx_sink(name):
@@ -418,6 +431,7 @@ def set_default_sink(name: str) -> bool:
     _invalidate_snap()
     if code != 0:
         return False
+    _PENDING_OUTPUT = name
     _, rows = _pactl("list", "short", "sink-inputs")
     for line in rows.splitlines():
         parts = line.split()
@@ -915,7 +929,8 @@ def paint_endpoint(ctx: ActionContext, kind: str, mode: str = "switch") -> None:
         return
 
     selected = active_output_sink() if kind == "sink" else current
-    if mode == "switch" and chosen and (chosen == selected or same_card(chosen, selected)):
+    selected_live = pick_live_name(kind, selected) if selected else selected
+    if mode == "switch" and name and selected_live and name == selected_live:
         ctx.set_state("ok")
     else:
         ctx.set_state("")
@@ -1217,7 +1232,7 @@ class SetOutputAction(_LiveAction):
             ctx.show_ok()
         else:
             ctx.show_alert()
-        self.update_visual(ctx)
+        _LiveAction._tick_all()
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
         return _DeviceInspector(ctx, "sink", parent)
@@ -1244,7 +1259,7 @@ class SetInputAction(_LiveAction):
             ctx.show_ok()
         else:
             ctx.show_alert()
-        self.update_visual(ctx)
+        _LiveAction._tick_all()
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
         return _DeviceInspector(ctx, "source", parent)
