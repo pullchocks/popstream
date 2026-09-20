@@ -7,7 +7,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from calendar import monthrange
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
@@ -103,6 +105,7 @@ class UsageSnapshot:
     used_pct: int | None = None
     unlimited: bool = False
     plan: str = ""
+    reset_at: float | None = None
     error: str | None = None
     fetched_at: float = 0.0
 
@@ -121,8 +124,42 @@ class UsageSnapshot:
             return "—"
         return f"{max(0, self.remaining_pct)}%"
 
+    def reset_title(self, mode: str = "countdown") -> str:
+        if self.error == "Loading":
+            return "…"
+        if self.error:
+            return "—"
+        if self.reset_at is None:
+            return "—"
+        when = datetime.fromtimestamp(self.reset_at)
+        date = f"{when.strftime('%b')} {when.day}"
+        if mode == "date":
+            return date
+        left = self.reset_at - time.time()
+        if left <= 0:
+            return "now"
+        days = int(left // 86400)
+        hours = int((left % 86400) // 3600)
+        minutes = int((left % 3600) // 60)
+        if days >= 2:
+            count = f"{days}d"
+        elif days == 1:
+            count = f"1d {hours}h" if hours else "1d"
+        elif hours >= 1:
+            count = f"{hours}h" if minutes < 15 else f"{hours}h {minutes}m"
+        else:
+            count = f"{max(1, minutes)}m"
+        if mode == "both":
+            return f"{count}\n{date}"
+        return count
+
     def low(self) -> bool:
         return (not self.unlimited) and self.remaining_pct is not None and self.remaining_pct <= LOW_PERCENT
+
+    def reset_soon(self) -> bool:
+        if self.reset_at is None:
+            return False
+        return 0 < (self.reset_at - time.time()) <= 86400
 
 
 def _percent_from_message(message: str) -> float | None:
@@ -141,11 +178,54 @@ def _percent_from_message(message: str) -> float | None:
         return None
 
 
+def _parse_timestamp(raw: Any) -> float | None:
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        if value > 1e12:
+            value /= 1000.0
+        if value > 1e9:
+            return value
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip().replace("Z", "+00:00")
+    try:
+        when = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.timestamp()
+
+
+def _parse_reset_at(data: dict[str, Any]) -> float | None:
+    for key in ("billingCycleEnd", "endOfMonth", "resetsAt", "nextReset"):
+        stamp = _parse_timestamp(data.get(key))
+        if stamp is not None:
+            return stamp
+    for key in ("billingCycleStart", "startOfMonth"):
+        stamp = _parse_timestamp(data.get(key))
+        if stamp is None:
+            continue
+        start = datetime.fromtimestamp(stamp, tz=timezone.utc)
+        month = start.month + 1
+        year = start.year + (1 if month > 12 else 0)
+        month = 1 if month > 12 else month
+        day = min(start.day, monthrange(year, month)[1])
+        try:
+            nxt = start.replace(year=year, month=month, day=day)
+        except ValueError:
+            continue
+        return nxt.timestamp()
+    return None
+
+
 def parse_summary(data: dict[str, Any]) -> UsageSnapshot:
     plan_name = str(data.get("membershipType") or "Cursor").strip() or "Cursor"
     plan_name = plan_name[:1].upper() + plan_name[1:]
+    reset_at = _parse_reset_at(data)
     if data.get("isUnlimited"):
-        return UsageSnapshot(remaining_pct=100, used_pct=0, unlimited=True, plan=plan_name)
+        return UsageSnapshot(remaining_pct=100, used_pct=0, unlimited=True, plan=plan_name, reset_at=reset_at)
     individual = data.get("individualUsage") if isinstance(data.get("individualUsage"), dict) else {}
     plan = individual.get("plan") if isinstance(individual.get("plan"), dict) else {}
     used_pct: float | None = None
@@ -171,13 +251,14 @@ def parse_summary(data: dict[str, Any]) -> UsageSnapshot:
         if isinstance(remaining, (int, float)) and isinstance(limit, (int, float)) and limit > 0:
             used_pct = 100.0 - (100.0 * float(remaining) / float(limit))
     if used_pct is None:
-        return UsageSnapshot(error="No usage numbers", plan=plan_name)
+        return UsageSnapshot(error="No usage numbers", plan=plan_name, reset_at=reset_at)
     remaining_pct = max(0, int(round(100.0 - float(used_pct))))
     return UsageSnapshot(
         remaining_pct=remaining_pct,
         used_pct=max(0, int(round(float(used_pct)))),
         unlimited=False,
         plan=plan_name,
+        reset_at=reset_at,
     )
 
 
@@ -299,7 +380,9 @@ def monitor() -> UsageMonitor:
     return _MONITOR
 
 
-class CursorUsageAction(Action):
+class _CursorLiveAction(Action):
+    kind = "usage"
+
     def __init__(self) -> None:
         self._timer: QTimer | None = None
         self._ctx: ActionContext | None = None
@@ -340,17 +423,25 @@ class CursorUsageAction(Action):
             return
         monitor().request(force=True)
         snap = monitor().snapshot
-        if snap.error and snap.remaining_pct is None and not snap.unlimited:
+        missing = snap.error and (
+            (self.kind == "reset" and snap.reset_at is None)
+            or (self.kind != "reset" and snap.remaining_pct is None and not snap.unlimited)
+        )
+        if missing:
             ctx.show_alert()
         else:
             ctx.show_ok()
         self._paint(ctx)
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
-        return _UsageInspector(ctx, parent)
+        return _UsageInspector(ctx, parent, reset=self.kind == "reset")
 
     def _tick(self) -> None:
-        monitor().request()
+        snap = monitor().snapshot
+        if snap.reset_at is not None and snap.reset_at <= time.time() and (time.time() - snap.fetched_at) > 60:
+            monitor().request(force=True)
+        else:
+            monitor().request()
         if self._ctx is not None:
             self._paint(self._ctx)
 
@@ -360,27 +451,53 @@ class CursorUsageAction(Action):
 
     def _paint(self, ctx: ActionContext) -> None:
         snap = monitor().snapshot
+        if self.kind == "reset":
+            ctx.set_state("danger" if snap.reset_soon() else "")
+            mode = str(ctx.settings.get("display") or "countdown")
+            ctx.set_title(snap.reset_title(mode))
+            return
         ctx.set_state("danger" if snap.low() else "")
         mode = str(ctx.settings.get("display") or "remaining")
         ctx.set_title(snap.title(mode))
 
 
+class CursorUsageAction(_CursorLiveAction):
+    kind = "usage"
+
+
+class CursorResetAction(_CursorLiveAction):
+    kind = "reset"
+
+
 class _UsageInspector(QWidget):
-    def __init__(self, ctx: ActionContext, parent=None) -> None:
+    def __init__(self, ctx: ActionContext, parent=None, *, reset: bool = False) -> None:
         super().__init__(parent)
         self._ctx = ctx
+        self._reset = reset
         layout = QFormLayout(self)
         tighten_form(layout)
-        hint = QLabel(
-            "The key shows included Cursor Models usage as a percent. "
-            "It also refreshes on its own about once an hour."
-        )
+        if reset:
+            hint = QLabel(
+                "The key shows when included Cursor usage resets this billing cycle. "
+                "It refreshes on its own about once an hour."
+            )
+        else:
+            hint = QLabel(
+                "The key shows included Cursor Models usage as a percent. "
+                "It also refreshes on its own about once an hour."
+            )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         self.display = fit_combo(QComboBox())
-        self.display.addItem("Remaining", "remaining")
-        self.display.addItem("Used", "used")
-        display = str(ctx.settings.get("display") or "remaining")
+        if reset:
+            self.display.addItem("Time left", "countdown")
+            self.display.addItem("Reset date", "date")
+            self.display.addItem("Both", "both")
+            display = str(ctx.settings.get("display") or "countdown")
+        else:
+            self.display.addItem("Remaining", "remaining")
+            self.display.addItem("Used", "used")
+            display = str(ctx.settings.get("display") or "remaining")
         index = self.display.findData(display)
         self.display.setCurrentIndex(index if index >= 0 else 0)
         self.display.currentIndexChanged.connect(self._save)
@@ -399,7 +516,8 @@ class _UsageInspector(QWidget):
 
     def _save(self) -> None:
         settings = dict(self._ctx.settings)
-        settings["display"] = self.display.currentData() or "remaining"
+        fallback = "countdown" if self._reset else "remaining"
+        settings["display"] = self.display.currentData() or fallback
         settings["on_press"] = self.press.currentData() or "refresh"
         settings.pop("open_dashboard", None)
         self._ctx.set_settings(settings)
@@ -420,9 +538,18 @@ class UsagePlugin(Plugin):
                 "Included Cursor usage this billing cycle",
                 "usage",
             ),
+            ActionInfo(
+                "cursor-reset",
+                "Cursor Reset",
+                "Usage",
+                "When included Cursor usage resets this billing cycle",
+                "reset",
+            ),
         ]
 
     def create_action(self, action_id: str) -> Action | None:
         if action_id == "cursor":
             return CursorUsageAction()
+        if action_id == "cursor-reset":
+            return CursorResetAction()
         return None

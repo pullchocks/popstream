@@ -93,7 +93,7 @@ Mute, missing devices, and the active **Set Output** / **Set Input** show on the
 | Clock | Clock, Date |
 | Audio | Set Output, Set Input, Fix Mic, Mic Check, EQ Preset, volume / mute, Play / Pause, skip, stop |
 | Battery | Device Battery (UPower) |
-| Usage | Cursor Usage (included usage this billing cycle; remaining or used) |
+| Usage | Cursor Usage (included usage this billing cycle; remaining or used), Cursor Reset (when that cycle resets) |
 | Bloop | Play Sound, Play / Stop, Stop All, Play Random, volume, Cable, Now Playing. Sound folders sit under Bloop after Now Playing so you can expand a category and drop a clip onto a key. |
 | Cliamp | Play / Pause, Now Playing, skip, stop, volume, shuffle, repeat, playlist, EQ |
 
