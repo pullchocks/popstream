@@ -97,7 +97,7 @@ Mute, missing devices, and the active **Set Output** / **Set Input** show on the
 | Usage | Cursor Usage (included usage this billing cycle; remaining or used), Cursor Reset (when that cycle resets) |
 | Bloop | Play Sound, Play / Stop, Stop All, Play Random, volume, Cable, Now Playing. Sound folders sit under Bloop after Now Playing so you can expand a category and drop a clip onto a key. |
 | Cliamp | Play / Pause, Now Playing, skip, stop, volume, shuffle, repeat, playlist, EQ |
-| Steam | Open Steam, Friends, Chat, Library, Store, Downloads, Big Picture, Launch Game, Wishlist, Wishlist Sales, Wishlist Releases, Status. Installed games also appear under Steam after you expand Games. |
+| Steam | Open Steam, Friends, Library, Store, Downloads, Big Picture, Launch Game, Wishlist, Wishlist Sales, Wishlist Releases, Status. Installed games also appear under Steam after you expand Games. |
 
 ## Data
 

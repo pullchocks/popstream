@@ -41,7 +41,6 @@ SPECIALS_URL = "https://store.steampowered.com/specials/"
 DESTINATIONS: list[tuple[str, str, str]] = [
     ("main", "Client", "steam://open/main"),
     ("friends", "Friends", "steam://open/friends"),
-    ("chat", "Chat", "steam://open/friends/chat"),
     ("library", "Library", "steam://open/games"),
     ("store", "Store", "steam://url/StoreFrontPage"),
     ("wishlist", "Wishlist", ""),
@@ -633,10 +632,6 @@ class FriendsAction(OpenSteamAction):
     dest = "friends"
 
 
-class ChatAction(OpenSteamAction):
-    dest = "chat"
-
-
 class LibraryAction(OpenSteamAction):
     dest = "library"
 
@@ -999,7 +994,6 @@ class SteamPlugin(Plugin):
                 defaults={"dest": "main"},
             ),
             ActionInfo("friends", "Friends", "Steam", "Open the Steam friends list", "friends"),
-            ActionInfo("chat", "Chat", "Steam", "Open Steam friends chat", "chat"),
             ActionInfo("library", "Library", "Steam", "Open the Steam library", "game"),
             ActionInfo("store", "Store", "Steam", "Open the Steam store", "store"),
             ActionInfo("downloads", "Downloads", "Steam", "Open Steam downloads", "download"),
@@ -1054,7 +1048,6 @@ class SteamPlugin(Plugin):
         mapping: dict[str, type[Action]] = {
             "open": OpenSteamPickerAction,
             "friends": FriendsAction,
-            "chat": ChatAction,
             "library": LibraryAction,
             "store": StoreAction,
             "downloads": DownloadsAction,
