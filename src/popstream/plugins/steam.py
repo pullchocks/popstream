@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import re
 import shutil
@@ -422,92 +423,111 @@ def _parse_release(raw: Any) -> float | None:
     return None
 
 
-def _coming_soon(row: dict[str, Any], release_at: float | None) -> bool:
-    if row.get("prerelease") in {1, True, "1", "true"}:
-        return True
-    blob = f"{row.get('release_string') or ''} {row.get('release_date') or ''}".lower()
-    if any(token in blob for token in ("coming soon", "to be announced", "tba")):
-        return True
-    if re.search(r"\bq[1-4]\b", blob):
-        return True
-    if release_at is not None and release_at > time.time():
-        return True
-    subs = row.get("subs")
-    if (not subs) and not row.get("is_free_game"):
-        if release_at is None or release_at > time.time():
-            return True
-    return False
-
-
-def parse_wishlist_page(data: Any) -> list[WishItem] | None:
-    if data == [] or data == {}:
-        return []
-    if isinstance(data, dict) and data.get("success") == 2:
-        return None
-    if not isinstance(data, dict):
-        return []
-    items: list[WishItem] = []
-    for appid, row in data.items():
-        if appid == "success" or not isinstance(row, dict):
-            continue
-        name = str(row.get("name") or appid).strip()
+def _item_from_details(appid: str, info: dict[str, Any]) -> WishItem:
+    price = info.get("price_overview") if isinstance(info.get("price_overview"), dict) else {}
+    release = info.get("release_date") if isinstance(info.get("release_date"), dict) else {}
+    try:
+        discount = int(price.get("discount_percent") or 0)
+    except (TypeError, ValueError):
         discount = 0
-        subs = row.get("subs") if isinstance(row.get("subs"), list) else []
-        for sub in subs:
-            if not isinstance(sub, dict):
-                continue
-            try:
-                discount = max(discount, int(sub.get("discount_pct") or 0))
-            except (TypeError, ValueError):
-                continue
-        release_at = _parse_release(row.get("release_date"))
-        items.append(
-            WishItem(
-                appid=str(appid),
-                name=name,
-                discount=discount,
-                coming_soon=_coming_soon(row, release_at),
-                release_at=release_at,
-            )
-        )
-    return items
+    release_at = _parse_release(release.get("date"))
+    blob = str(release.get("date") or "").lower()
+    coming = bool(release.get("coming_soon"))
+    if any(token in blob for token in ("coming soon", "to be announced", "tba")):
+        coming = True
+    if re.search(r"\bq[1-4]\b", blob):
+        coming = True
+    if release_at is not None and release_at > time.time():
+        coming = True
+    name = str(info.get("name") or appid).strip() or appid
+    return WishItem(
+        appid=appid,
+        name=name,
+        discount=max(0, discount),
+        coming_soon=coming,
+        release_at=release_at,
+    )
 
 
-def _http_json(url: str) -> Any:
+def _http_json(url: str, timeout: float = 8) -> Any:
     request = urllib.request.Request(
         url,
         headers={"User-Agent": BROWSER_UA, "Accept": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=8) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read().decode("utf-8", "ignore")
     if not raw.strip():
-        return []
+        return {}
     if raw.lstrip().startswith("<"):
-        return {"success": 2}
+        raise json.JSONDecodeError("html", raw, 0)
     return json.loads(raw)
+
+
+def _app_detail(appid: str) -> dict[str, Any]:
+    url = (
+        "https://store.steampowered.com/api/appdetails"
+        f"?appids={appid}&filters=price_overview,release_date,basic"
+    )
+    try:
+        payload = _http_json(url, timeout=10)
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    row = payload.get(str(appid))
+    if not isinstance(row, dict) or not row.get("success"):
+        return {}
+    data = row.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _app_details(appids: list[str]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    if not appids:
+        return out
+    workers = min(6, len(appids))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {pool.submit(_app_detail, appid): appid for appid in appids}
+        for fut in concurrent.futures.as_completed(futs):
+            appid = futs[fut]
+            try:
+                data = fut.result()
+            except Exception:
+                continue
+            if data:
+                out[appid] = data
+    return out
 
 
 def fetch_wishlist(query: str) -> WishSnap:
     ident = resolve_steamid(query)
     if not ident:
         return WishSnap(error="No Steam ID", query=query)
-    items: list[WishItem] = []
-    for page in range(0, 20):
-        url = f"https://store.steampowered.com/wishlist/profiles/{ident}/wishlistdata/?p={page}"
-        try:
-            payload = _http_json(url)
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
-            if items:
-                break
-            return WishSnap(error="Wishlist unavailable", steamid=ident, query=query)
-        parsed = parse_wishlist_page(payload)
-        if parsed is None:
-            return WishSnap(error="Private wishlist", steamid=ident, query=query)
-        if not parsed:
-            break
-        items.extend(parsed)
-        if len(parsed) < 50:
-            break
+    url = f"https://api.steampowered.com/IWishlistService/GetWishlist/v1/?steamid={ident}"
+    try:
+        payload = _http_json(url)
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+        return WishSnap(error="Wishlist unavailable", steamid=ident, query=query)
+    response = payload.get("response") if isinstance(payload, dict) else None
+    if not isinstance(response, dict):
+        return WishSnap(error="Wishlist unavailable", steamid=ident, query=query)
+    if "items" not in response:
+        return WishSnap(error="Private wishlist", steamid=ident, query=query)
+    rows = response.get("items")
+    if not isinstance(rows, list):
+        rows = []
+    appids: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or row.get("appid") is None:
+            continue
+        appid = str(row.get("appid")).strip()
+        if not appid or appid in seen:
+            continue
+        seen.add(appid)
+        appids.append(appid)
+    details = _app_details(appids)
+    items = [_item_from_details(appid, details.get(appid) or {}) for appid in appids]
     return WishSnap(items=items, fetched_at=time.time(), steamid=ident, query=query)
 
 
@@ -781,7 +801,12 @@ class _WishlistLiveAction(Action):
             return
         if snap.error:
             ctx.set_state("danger")
-            ctx.set_title("—")
+            if snap.error == "No Steam ID":
+                ctx.set_title("NO ID")
+            elif snap.error == "Private wishlist":
+                ctx.set_title("PRIV")
+            else:
+                ctx.set_title("ERR")
             return
         if self.kind == "sales":
             sales = snap.sales()
