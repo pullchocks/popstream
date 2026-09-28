@@ -351,6 +351,130 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
         painter.drawEllipse(QRectF(box.right() - box.width() * 0.22 - dot, box.bottom() - box.height() * 0.22 - dot, dot * 2, dot * 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(accent, max(2, size // 24)))
+    elif k == "steam":
+        painter.drawEllipse(box)
+        inner = box.adjusted(box.width() * 0.18, box.height() * 0.18, -box.width() * 0.18, -box.height() * 0.18)
+        painter.drawEllipse(inner)
+        hub = QRectF(
+            box.left() + box.width() * 0.12,
+            box.bottom() - box.height() * 0.42,
+            box.width() * 0.28,
+            box.height() * 0.28,
+        )
+        painter.setBrush(accent)
+        painter.drawEllipse(hub)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        start = hub.center()
+        end = inner.center()
+        painter.drawLine(start.x(), start.y(), end.x(), end.y())
+    elif k == "friends":
+        head = box.width() * 0.22
+        painter.drawEllipse(
+            QRectF(box.center().x() - head * 1.15, box.top() + box.height() * 0.08, head, head)
+        )
+        painter.drawEllipse(
+            QRectF(box.center().x() + head * 0.15, box.top() + box.height() * 0.14, head * 0.82, head * 0.82)
+        )
+        painter.drawArc(
+            QRectF(box.left() + box.width() * 0.08, box.center().y(), box.width() * 0.5, box.height() * 0.48),
+            20 * 16,
+            140 * 16,
+        )
+        painter.drawArc(
+            QRectF(box.center().x() - box.width() * 0.02, box.center().y() + box.height() * 0.06, box.width() * 0.42, box.height() * 0.4),
+            20 * 16,
+            140 * 16,
+        )
+    elif k == "chat":
+        bubble = box.adjusted(0, 0, 0, -box.height() * 0.18)
+        painter.drawRoundedRect(bubble, 8, 8)
+        painter.drawLine(
+            bubble.left() + bubble.width() * 0.22,
+            bubble.bottom(),
+            bubble.left() + bubble.width() * 0.18,
+            box.bottom() - box.height() * 0.02,
+        )
+        painter.drawLine(
+            bubble.left() + bubble.width() * 0.18,
+            box.bottom() - box.height() * 0.02,
+            bubble.left() + bubble.width() * 0.42,
+            bubble.bottom(),
+        )
+    elif k in ("game", "controller"):
+        body = box.adjusted(0, box.height() * 0.18, 0, -box.height() * 0.18)
+        painter.drawRoundedRect(body, body.height() * 0.42, body.height() * 0.42)
+        painter.drawEllipse(
+            QRectF(body.left() + body.width() * 0.18, body.center().y() - body.height() * 0.12, body.width() * 0.14, body.height() * 0.24)
+        )
+        painter.drawEllipse(
+            QRectF(body.right() - body.width() * 0.32, body.center().y() - body.height() * 0.12, body.width() * 0.14, body.height() * 0.24)
+        )
+    elif k == "store":
+        bag = box.adjusted(box.width() * 0.12, box.height() * 0.22, -box.width() * 0.12, 0)
+        painter.drawRoundedRect(bag, 4, 4)
+        painter.drawArc(
+            QRectF(box.center().x() - box.width() * 0.18, box.top(), box.width() * 0.36, box.height() * 0.42),
+            0,
+            180 * 16,
+        )
+    elif k in ("wish", "heart"):
+        path = QPainterPath()
+        mid = box.center()
+        path.moveTo(mid.x(), box.bottom() - box.height() * 0.08)
+        path.cubicTo(
+            box.left() - box.width() * 0.05,
+            box.center().y() + box.height() * 0.05,
+            box.left() + box.width() * 0.08,
+            box.top() + box.height() * 0.02,
+            mid.x(),
+            box.top() + box.height() * 0.32,
+        )
+        path.cubicTo(
+            box.right() - box.width() * 0.08,
+            box.top() + box.height() * 0.02,
+            box.right() + box.width() * 0.05,
+            box.center().y() + box.height() * 0.05,
+            mid.x(),
+            box.bottom() - box.height() * 0.08,
+        )
+        painter.drawPath(path)
+    elif k == "sale":
+        tag = QPainterPath()
+        tag.moveTo(box.left() + box.width() * 0.12, box.center().y())
+        tag.lineTo(box.left() + box.width() * 0.42, box.top() + box.height() * 0.08)
+        tag.lineTo(box.right() - box.width() * 0.08, box.top() + box.height() * 0.08)
+        tag.lineTo(box.right() - box.width() * 0.08, box.bottom() - box.height() * 0.08)
+        tag.lineTo(box.left() + box.width() * 0.42, box.bottom() - box.height() * 0.08)
+        tag.closeSubpath()
+        painter.drawPath(tag)
+        hole = box.width() * 0.1
+        painter.drawEllipse(
+            QRectF(box.left() + box.width() * 0.22, box.center().y() - hole / 2, hole, hole)
+        )
+    elif k == "download":
+        painter.drawLine(box.center().x(), box.top() + box.height() * 0.08, box.center().x(), box.bottom() - box.height() * 0.32)
+        painter.drawLine(
+            box.center().x() - box.width() * 0.22,
+            box.center().y() + box.height() * 0.02,
+            box.center().x(),
+            box.bottom() - box.height() * 0.32,
+        )
+        painter.drawLine(
+            box.center().x() + box.width() * 0.22,
+            box.center().y() + box.height() * 0.02,
+            box.center().x(),
+            box.bottom() - box.height() * 0.32,
+        )
+        painter.drawLine(
+            box.left() + box.width() * 0.12,
+            box.bottom() - box.height() * 0.14,
+            box.right() - box.width() * 0.12,
+            box.bottom() - box.height() * 0.14,
+        )
+    elif k == "status":
+        painter.setBrush(accent)
+        painter.drawEllipse(box.adjusted(box.width() * 0.18, box.height() * 0.18, -box.width() * 0.18, -box.height() * 0.18))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
     else:
         # grid
         cell = box.width() / 3.6
