@@ -26,7 +26,7 @@ from PySide6.QtGui import (
 
 from popstream.core.specs import DeviceSpec
 from popstream.core.store import load_settings, save_settings
-from popstream.ui.theme import C
+from popstream.ui.theme import C, ui_font
 
 LOCK_MODES = ("clock", "image", "screensaver")
 _DBUS_TIMEOUT_MS = 400
@@ -304,10 +304,10 @@ def render_lock_tiles(spec: DeviceSpec, config: dict[str, Any], now: datetime | 
 def _render_clock(spec: DeviceSpec, when: datetime, hour12: bool) -> list[QImage]:
     cells = clock_cells(spec.columns, spec.rows, when, hour12)
     blink = (int(when.second) % 2) == 0
-    return [_glyph_tile(spec.key_size, cell, blink) for cell in cells]
+    return [glyph_tile(spec.key_size, cell, blink) for cell in cells]
 
 
-def _glyph_tile(size: int, text: str, blink: bool) -> QImage:
+def glyph_tile(size: int, text: str, blink: bool) -> QImage:
     image = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(QColor("#101010"))
     painter = QPainter(image)
@@ -329,10 +329,7 @@ def _glyph_tile(size: int, text: str, blink: bool) -> QImage:
         painter.drawEllipse(QRectF(cx - r, size * 0.68 - r, r * 2, r * 2))
         painter.end()
         return image
-    font = QFont("Inter, Ubuntu, Segoe UI, Sans Serif")
-    font.setPixelSize(int(size * (0.38 if len(text) > 1 else 0.72)))
-    font.setWeight(QFont.Weight.Bold)
-    painter.setFont(font)
+    painter.setFont(ui_font(int(size * (0.38 if len(text) > 1 else 0.72)), QFont.Weight.Bold))
     painter.setPen(QColor(C.text))
     painter.drawText(QRectF(0, 0, size, size), int(Qt.AlignmentFlag.AlignCenter), text)
     painter.end()

@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from popstream.core.plugin import Action, ActionContext, ActionInfo, Plugin
-from popstream.ui.theme import C, fit_combo, plain_spin, tighten_form
+from popstream.ui.theme import C, ui_font, fit_combo, plain_spin, tighten_form
 
 
 def _run_bin(name: str, *args: str) -> tuple[int, str]:
@@ -1682,10 +1682,7 @@ def _mic_check_image(peak: float, muted: bool, capturing: bool, size: int = 144)
             painter.fillRect(rect, QColor("#2b2b2b"))
 
     painter.setPen(QColor(C.muted))
-    font = QFont()
-    font.setPixelSize(max(10, size // 9))
-    font.setBold(True)
-    painter.setFont(font)
+    painter.setFont(ui_font(max(10, size // 9), QFont.Weight.Bold))
     label = "MUTE" if muted else f"{int(level * 100)}%"
     painter.drawText(QRectF(0, size * 0.02, size, size * 0.16), int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter), label)
     painter.end()

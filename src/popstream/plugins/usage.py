@@ -647,28 +647,28 @@ class UsagePlugin(Plugin):
                 "Cursor Usage",
                 "Usage",
                 "Included Cursor usage this billing cycle",
-                "usage",
+                "cursor",
             ),
             ActionInfo(
                 "cursor-reset",
                 "Cursor Reset",
                 "Usage",
                 "When included Cursor usage resets this billing cycle",
-                "reset",
+                "cursor-reset",
             ),
             ActionInfo(
                 "grok-bot",
                 "Grok Bot Usage",
                 "Usage",
                 "Included Grok Bot usage this week",
-                "usage",
+                "grok",
             ),
             ActionInfo(
                 "grok-bot-reset",
                 "Grok Bot Reset",
                 "Usage",
                 "When included Grok Bot usage resets this week",
-                "reset",
+                "grok-reset",
             ),
         ]
 

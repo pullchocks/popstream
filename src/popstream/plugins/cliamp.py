@@ -15,7 +15,21 @@ from popstream.ui.theme import fit_combo, plain_spin, tighten_form
 
 VOL_MIN = -30.0
 VOL_MAX = 6.0
-EQ_PRESETS = ("Flat", "Rock", "Pop", "Jazz", "Classical", "Bass Boost", "Treble Boost")
+EQ_PRESETS = (
+    "Flat",
+    "Rock",
+    "Pop",
+    "Jazz",
+    "Classical",
+    "Bass Boost",
+    "Treble Boost",
+    "Dance",
+    "Electronic",
+    "Vocal",
+    "Piano",
+    "Acoustic",
+)
+SPEEDS = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
 
 _status_cache: tuple[float, dict[str, Any] | None] = (0.0, None)
 
@@ -59,6 +73,7 @@ def cliamp_status(*, fresh: bool = False) -> dict[str, Any] | None:
         return None
     track = data.get("track") if isinstance(data.get("track"), dict) else {}
     title = str(track.get("title") or "").strip()
+    artist = str(track.get("artist") or "").strip()
     state = str(data.get("state") or "").strip().lower()
     shuffle = data.get("shuffle")
     repeat = str(data.get("repeat") or "off").strip().lower()
@@ -73,18 +88,50 @@ def cliamp_status(*, fresh: bool = False) -> dict[str, Any] | None:
                 tmatch = re.search(r"^Track:\s*(.+)$", text or "", re.M)
                 if tmatch:
                     title = tmatch.group(1).strip()
+            if not artist:
+                amatch = re.search(r"^Artist:\s*(.+)$", text or "", re.M)
+                if amatch:
+                    artist = amatch.group(1).strip()
     try:
         volume_db = float(volume) if volume is not None else None
     except (TypeError, ValueError):
         volume_db = None
+    try:
+        speed = float(data.get("speed") if data.get("speed") is not None else 1.0)
+    except (TypeError, ValueError):
+        speed = 1.0
+    try:
+        position = float(data.get("position") or 0.0)
+    except (TypeError, ValueError):
+        position = 0.0
+    try:
+        duration = float(data.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        duration = 0.0
     data["title"] = title
+    data["artist"] = artist
     data["playing"] = state == "playing"
     data["paused"] = state == "paused"
     data["shuffle_on"] = shuffle is True or str(shuffle).lower() in {"on", "true"}
     data["repeat_mode"] = repeat if repeat in {"off", "all", "one"} else "off"
     data["volume_db"] = volume_db
+    data["mono_on"] = data.get("mono") is True or str(data.get("mono") or "").lower() in {"on", "true"}
+    data["speed"] = speed
+    data["position"] = position
+    data["duration"] = duration
+    data["visualizer"] = str(data.get("visualizer") or "").strip()
+    data["eq_preset"] = str(data.get("eq_preset") or "").strip()
     _status_cache = (now, data)
     return data
+
+
+def _playlist_name(line: str) -> str:
+    text = (line or "").strip().lstrip("*").strip()
+    if not text or text.lower().startswith("no playlist"):
+        return ""
+    text = re.sub(r"\s*\(\d+\s+tracks?\)$", "", text, flags=re.I)
+    text = re.sub(r"\s+\d+\s+tracks?$", "", text, flags=re.I)
+    return text.strip()
 
 
 def cliamp_playlists() -> list[str]:
@@ -93,11 +140,20 @@ def cliamp_playlists() -> list[str]:
         return []
     names: list[str] = []
     for line in out.splitlines():
-        line = line.strip()
-        if not line or line.lower().startswith("no playlist"):
-            continue
-        name = re.sub(r"\s*\(\d+\s+tracks?\)$", "", line, flags=re.I).strip()
-        if name:
+        name = _playlist_name(line)
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def cliamp_visualizers() -> list[str]:
+    code, out = _cliamp("vis", "list")
+    if code != 0 or not out:
+        return []
+    names: list[str] = []
+    for line in out.splitlines():
+        name = line.strip().lstrip("*").strip()
+        if name and name not in names:
             names.append(name)
     return names
 
@@ -282,9 +338,13 @@ class NowPlayingAction(_LiveAction):
         if _paint_offline(ctx, status):
             return
         title = str(status.get("title") or "").strip() if status else ""
+        artist = str(status.get("artist") or "").strip() if status else ""
         playing = bool(status and status.get("playing"))
         ctx.set_state("ok" if playing and title else "")
-        ctx.set_title((title[:18] if title else "—"))
+        if title and artist:
+            ctx.set_title(f"{title}\n{artist}")
+        else:
+            ctx.set_title(title or "—")
 
     def key_down(self, ctx: ActionContext) -> None:
         if not cliamp_ok("toggle"):
@@ -434,40 +494,221 @@ class EqPresetAction(_LiveAction):
         return _EqInspector(ctx, parent)
 
 
+class SeekAction(_LiveAction):
+    seconds = 10
+
+    def update_visual(self, ctx: ActionContext) -> None:
+        status = cliamp_status()
+        if _paint_offline(ctx, status):
+            return
+        ctx.set_state("ok" if status and status.get("playing") else "")
+        step = int(ctx.settings.get("step", abs(self.seconds)))
+        if self.seconds < 0:
+            step = -step
+        sign = "+" if step > 0 else ""
+        _keep_or_set(ctx, f"{sign}{step}s")
+
+    def key_down(self, ctx: ActionContext) -> None:
+        step = int(ctx.settings.get("step", abs(self.seconds)))
+        if self.seconds < 0:
+            step = -step
+        if not cliamp_ok("seek", str(step)):
+            ctx.show_alert()
+        else:
+            ctx.show_ok()
+        cliamp_status(fresh=True)
+        self.update_visual(ctx)
+
+    def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
+        return _SeekInspector(ctx, parent)
+
+
+class SeekForwardAction(SeekAction):
+    seconds = 10
+
+
+class SeekBackAction(SeekAction):
+    seconds = -10
+
+
+class VisualizerAction(_LiveAction):
+    def update_visual(self, ctx: ActionContext) -> None:
+        status = cliamp_status()
+        if _paint_offline(ctx, status):
+            return
+        current = str(status.get("visualizer") or "").strip() if status else ""
+        chosen = str(ctx.settings.get("visualizer") or "").strip()
+        ctx.set_state("ok" if chosen and chosen.lower() == current.lower() else "")
+        _keep_or_set(ctx, chosen or current or "Vis")
+
+    def key_down(self, ctx: ActionContext) -> None:
+        chosen = str(ctx.settings.get("visualizer") or "").strip()
+        ok = cliamp_ok("vis", chosen) if chosen else cliamp_ok("vis", "next")
+        if not ok:
+            ctx.show_alert()
+        else:
+            ctx.show_ok()
+        cliamp_status(fresh=True)
+        self.update_visual(ctx)
+
+    def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
+        return _VisualizerInspector(ctx, parent)
+
+
+class MonoAction(_LiveAction):
+    def update_visual(self, ctx: ActionContext) -> None:
+        status = cliamp_status()
+        if _paint_offline(ctx, status):
+            return
+        on = bool(status and status.get("mono_on"))
+        ctx.set_state("ok" if on else "")
+        _keep_or_set(ctx, "ON" if on else "OFF")
+
+    def key_down(self, ctx: ActionContext) -> None:
+        if not cliamp_ok("mono", "toggle"):
+            ctx.show_alert()
+        else:
+            ctx.show_ok()
+        cliamp_status(fresh=True)
+        self.update_visual(ctx)
+
+
+class SpeedAction(_LiveAction):
+    def update_visual(self, ctx: ActionContext) -> None:
+        status = cliamp_status()
+        if _paint_offline(ctx, status):
+            return
+        speed = float(status.get("speed") or 1.0) if status else 1.0
+        ctx.set_state("ok" if abs(speed - 1.0) > 0.04 else "")
+        _keep_or_set(ctx, f"{speed:g}x")
+
+    def key_down(self, ctx: ActionContext) -> None:
+        status = cliamp_status(fresh=True)
+        current = float(status.get("speed") or 1.0) if status else 1.0
+        nxt = SPEEDS[0]
+        for i, value in enumerate(SPEEDS):
+            if abs(current - value) < 0.04:
+                nxt = SPEEDS[(i + 1) % len(SPEEDS)]
+                break
+        if not cliamp_ok("speed", f"{nxt:g}"):
+            ctx.show_alert()
+        else:
+            ctx.show_ok()
+        cliamp_status(fresh=True)
+        self.update_visual(ctx)
+
+
+class _SeekInspector(QWidget):
+    def __init__(self, ctx: ActionContext, parent=None) -> None:
+        super().__init__(parent)
+        self._ctx = ctx
+        layout = QFormLayout(self)
+        tighten_form(layout)
+        self.step = plain_spin(1, 60, int(ctx.settings.get("step", 10)))
+        self.step.setSuffix(" sec")
+        self.step.valueChanged.connect(self._save)
+        layout.addRow("Jump", self.step)
+
+    def _save(self) -> None:
+        settings = dict(self._ctx.settings)
+        settings["step"] = self.step.value()
+        self._ctx.set_settings(settings)
+
+
+class _VisualizerInspector(QWidget):
+    def __init__(self, ctx: ActionContext, parent=None) -> None:
+        super().__init__(parent)
+        self._ctx = ctx
+        layout = QFormLayout(self)
+        tighten_form(layout)
+        self.combo = fit_combo(QComboBox())
+        current = str(ctx.settings.get("visualizer") or "")
+        names = cliamp_visualizers()
+        self.combo.addItem("Cycle next", "")
+        for name in names:
+            self.combo.addItem(name, name)
+        index = self.combo.findData(current)
+        self.combo.setCurrentIndex(index if index >= 0 else 0)
+        self.combo.currentIndexChanged.connect(self._save)
+        layout.addRow("Visualizer", self.combo)
+
+    def _save(self) -> None:
+        settings = dict(self._ctx.settings)
+        settings["visualizer"] = self.combo.currentData() or ""
+        self._ctx.set_settings(settings)
+
+
 class CliampPlugin(Plugin):
     id = "com.popstream.cliamp"
     name = "Cliamp"
-    version = "0.1.0"
+    version = "0.2.0"
     author = "PopStream"
 
     def actions(self) -> list[ActionInfo]:
-        return [
+        items = [
             ActionInfo("play-pause", "Play / Pause", "Cliamp", "Toggle cliamp playback", "play"),
-            ActionInfo("now-playing", "Now Playing", "Cliamp", "Live track title; press to play / pause", "wave"),
+            ActionInfo("now-playing", "Now Playing", "Cliamp", "Live track and artist; press to play / pause", "wave"),
             ActionInfo("next", "Next Track", "Cliamp", "Skip to the next cliamp track", "next"),
             ActionInfo("prev", "Previous Track", "Cliamp", "Go to the previous cliamp track", "prev"),
             ActionInfo("stop", "Stop", "Cliamp", "Stop cliamp playback", "stop"),
+            ActionInfo("seek-fwd", "Seek Forward", "Cliamp", "Jump forward in the current track", "seekfwd"),
+            ActionInfo("seek-back", "Seek Back", "Cliamp", "Jump backward in the current track", "seekback"),
             ActionInfo("volume", "Volume", "Cliamp", "Live cliamp volume; press to mute / unmute", "speaker"),
             ActionInfo("vol-up", "Volume Up", "Cliamp", "Raise cliamp volume", "volup"),
             ActionInfo("vol-down", "Volume Down", "Cliamp", "Lower cliamp volume", "voldown"),
             ActionInfo("shuffle", "Shuffle", "Cliamp", "Toggle cliamp shuffle", "shuffle"),
             ActionInfo("repeat", "Repeat", "Cliamp", "Cycle cliamp repeat: off, all, one", "repeat"),
+            ActionInfo("mono", "Mono", "Cliamp", "Toggle cliamp mono output", "mono"),
+            ActionInfo("speed", "Speed", "Cliamp", "Cycle cliamp playback speed", "speed"),
+            ActionInfo("vis", "Visualizer", "Cliamp", "Cycle or set the cliamp visualizer", "vis"),
             ActionInfo("playlist", "Load Playlist", "Cliamp", "Load a local cliamp playlist", "folder"),
             ActionInfo("eq", "EQ Preset", "Cliamp", "Apply a cliamp EQ preset", "eq"),
         ]
+        for name in cliamp_playlists():
+            items.append(
+                ActionInfo(
+                    f"playlist:{name}",
+                    name,
+                    "Cliamp / Playlists",
+                    f"Load {name}",
+                    "folder",
+                    defaults={"playlist": name},
+                )
+            )
+        for preset in EQ_PRESETS:
+            items.append(
+                ActionInfo(
+                    f"eq:{preset}",
+                    preset,
+                    "Cliamp / EQ",
+                    f"Apply the {preset} EQ preset",
+                    "eq",
+                    defaults={"preset": preset},
+                )
+            )
+        return items
 
     def create_action(self, action_id: str) -> Action | None:
+        if action_id.startswith("playlist:"):
+            return LoadPlaylistAction()
+        if action_id.startswith("eq:"):
+            return EqPresetAction()
         mapping = {
             "play-pause": PlayPauseAction,
             "now-playing": NowPlayingAction,
             "next": NextAction,
             "prev": PrevAction,
             "stop": StopAction,
+            "seek-fwd": SeekForwardAction,
+            "seek-back": SeekBackAction,
             "volume": VolumeAction,
             "vol-up": VolumeUpAction,
             "vol-down": VolumeDownAction,
             "shuffle": ShuffleAction,
             "repeat": RepeatAction,
+            "mono": MonoAction,
+            "speed": SpeedAction,
+            "vis": VisualizerAction,
             "playlist": LoadPlaylistAction,
             "eq": EqPresetAction,
         }

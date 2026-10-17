@@ -74,7 +74,7 @@ Supported layouts include Mini, Original, Original V2, MK.2, XL, Plus, Neo, and 
 
 ## Use
 
-- **Click a key** to select it and edit it in the inspector.
+- **Click a key** to select it and edit it in the inspector. Arrow keys move to another key; Delete or Backspace clears it.
 - **Drag an action** from the left catalog onto a key. Click an action first to set its options, then drag. Those settings apply on drop.
 - **Double-click a key** (or press Space) to run the action. Presses on the physical deck always run.
 - **Drag keys** onto each other to swap them.
@@ -91,12 +91,12 @@ Mute, missing devices, and the active **Set Output** / **Set Input** show on the
 | --- | --- |
 | System | Website, Open App, Run Command, Hotkey, Text, Move to Monitor |
 | Navigation | Folder, Back, Next Page, Previous Page |
-| Clock | Clock, Date |
+| Clock | Clock, Date, Big Time (one lock-style digit per key), Big Date (one lock-style letter per key) |
 | Audio | Set Output, Set Input, Fix Mic, Mic Check, EQ Preset, volume / mute, Play / Pause, skip, stop |
 | Battery | Device Battery (UPower) |
 | Usage | Cursor Usage (included usage this billing cycle; remaining or used), Cursor Reset (when that cycle resets), Grok Bot Usage (included weekly usage), Grok Bot Reset (when that week resets) |
 | Bloop | Play Sound, Play / Stop, Stop All, Play Random, volume, Cable, Now Playing. Sound folders sit under Bloop after Now Playing so you can expand a category and drop a clip onto a key. |
-| Cliamp | Play / Pause, Now Playing, skip, stop, volume, shuffle, repeat, playlist, EQ |
+| Cliamp | Play / Pause, Now Playing, skip, seek, stop, volume, shuffle, repeat, mono, speed, visualizer, playlist, EQ. Saved playlists and EQ presets also appear under Cliamp after you expand those groups. |
 | Steam | Open Steam, Friends, Library, Store, Downloads, Big Picture, Launch Game, Wishlist, Wishlist Sales, Wishlist Releases, Status. Installed games also appear under Steam after you expand Games. |
 
 ## Data

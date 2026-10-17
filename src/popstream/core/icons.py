@@ -3,7 +3,45 @@ from __future__ import annotations
 from PySide6.QtCore import QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 
-from popstream.ui.theme import C
+from popstream.ui.theme import C, ui_font
+
+
+def _pointer_path(box: QRectF) -> QPainterPath:
+    path = QPainterPath()
+    x, y, w, h = box.x(), box.y(), box.width(), box.height()
+    path.moveTo(x + w * 0.16, y + h * 0.08)
+    path.lineTo(x + w * 0.16, y + h * 0.78)
+    path.lineTo(x + w * 0.36, y + h * 0.58)
+    path.lineTo(x + w * 0.50, y + h * 0.90)
+    path.lineTo(x + w * 0.64, y + h * 0.84)
+    path.lineTo(x + w * 0.48, y + h * 0.52)
+    path.lineTo(x + w * 0.82, y + h * 0.52)
+    path.closeSubpath()
+    return path
+
+
+def _star_path(box: QRectF) -> QPainterPath:
+    cx, cy = box.center().x(), box.center().y()
+    w, h = box.width(), box.height()
+    path = QPainterPath()
+    path.moveTo(cx, box.top())
+    path.lineTo(cx + w * 0.16, cy - h * 0.16)
+    path.lineTo(box.right(), cy)
+    path.lineTo(cx + w * 0.16, cy + h * 0.16)
+    path.lineTo(cx, box.bottom())
+    path.lineTo(cx - w * 0.16, cy + h * 0.16)
+    path.lineTo(box.left(), cy)
+    path.lineTo(cx - w * 0.16, cy - h * 0.16)
+    path.closeSubpath()
+    return path
+
+
+def _draw_reset_arrow(painter: QPainter, box: QRectF) -> None:
+    painter.drawArc(box, 40 * 16, 280 * 16)
+    tip_x = box.right() - box.width() * 0.12
+    tip_y = box.top() + box.height() * 0.28
+    painter.drawLine(tip_x, box.top() + box.height() * 0.08, tip_x, tip_y)
+    painter.drawLine(tip_x, tip_y, box.right() - box.width() * 0.32, box.top() + box.height() * 0.22)
 
 
 def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
@@ -65,8 +103,7 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
                     2,
                 )
     elif k in ("type", "text"):
-        font = QFont("Sans Serif", int(size * 0.38), QFont.Weight.Bold)
-        painter.setFont(font)
+        painter.setFont(ui_font(int(size * 0.42), QFont.Weight.Bold))
         painter.setPen(accent)
         painter.drawText(QRect(0, 0, size, size), int(Qt.AlignmentFlag.AlignCenter), "T")
     elif k == "folder":
@@ -77,11 +114,11 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
         painter.drawLine(box.center().x() + box.width() * 0.2, box.top() + box.height() * 0.2, box.left() + box.width() * 0.15, box.center().y())
         painter.drawLine(box.center().x() + box.width() * 0.2, box.bottom() - box.height() * 0.2, box.left() + box.width() * 0.15, box.center().y())
         painter.drawLine(box.left() + box.width() * 0.15, box.center().y(), box.right() - box.width() * 0.1, box.center().y())
-    elif k == "next":
+    elif k in ("next", "seekfwd"):
         painter.drawLine(box.left() + box.width() * 0.15, box.center().y(), box.right() - box.width() * 0.15, box.center().y())
         painter.drawLine(box.right() - box.width() * 0.35, box.top() + box.height() * 0.22, box.right() - box.width() * 0.12, box.center().y())
         painter.drawLine(box.right() - box.width() * 0.35, box.bottom() - box.height() * 0.22, box.right() - box.width() * 0.12, box.center().y())
-    elif k == "prev":
+    elif k in ("prev", "seekback"):
         painter.drawLine(box.right() - box.width() * 0.15, box.center().y(), box.left() + box.width() * 0.15, box.center().y())
         painter.drawLine(box.left() + box.width() * 0.35, box.top() + box.height() * 0.22, box.left() + box.width() * 0.12, box.center().y())
         painter.drawLine(box.left() + box.width() * 0.35, box.bottom() - box.height() * 0.22, box.left() + box.width() * 0.12, box.center().y())
@@ -94,8 +131,7 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
         painter.drawRoundedRect(box, 4, 4)
         painter.drawLine(box.left(), box.top() + box.height() * 0.28, box.right(), box.top() + box.height() * 0.28)
         painter.setPen(muted)
-        font = QFont("Sans Serif", int(size * 0.22), QFont.Weight.Bold)
-        painter.setFont(font)
+        painter.setFont(ui_font(int(size * 0.28), QFont.Weight.Bold))
         painter.drawText(QRectF(box.left(), box.top() + box.height() * 0.32, box.width(), box.height() * 0.6), int(Qt.AlignmentFlag.AlignCenter), "31")
     elif k in ("sun", "brightness"):
         painter.drawEllipse(box.adjusted(box.width() * 0.22, box.height() * 0.22, -box.width() * 0.22, -box.height() * 0.22))
@@ -215,11 +251,35 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(accent, max(2, size // 24)))
     elif k in ("reset", "cycle"):
-        painter.drawArc(box, 40 * 16, 280 * 16)
-        tip_x = box.right() - box.width() * 0.12
-        tip_y = box.top() + box.height() * 0.28
-        painter.drawLine(tip_x, box.top() + box.height() * 0.08, tip_x, tip_y)
-        painter.drawLine(tip_x, tip_y, box.right() - box.width() * 0.32, box.top() + box.height() * 0.22)
+        _draw_reset_arrow(painter, box)
+    elif k in ("cursor", "cursor-usage"):
+        painter.setBrush(accent)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(_pointer_path(box))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(accent, max(2, size // 24)))
+    elif k in ("grok", "grok-usage"):
+        painter.setBrush(accent)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(_star_path(box))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(accent, max(2, size // 24)))
+    elif k == "cursor-reset":
+        _draw_reset_arrow(painter, box)
+        inner = box.adjusted(box.width() * 0.30, box.height() * 0.30, -box.width() * 0.30, -box.height() * 0.30)
+        painter.setBrush(accent)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(_pointer_path(inner))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(accent, max(2, size // 24)))
+    elif k == "grok-reset":
+        _draw_reset_arrow(painter, box)
+        inner = box.adjusted(box.width() * 0.28, box.height() * 0.28, -box.width() * 0.28, -box.height() * 0.28)
+        painter.setBrush(accent)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(_star_path(inner))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(accent, max(2, size // 24)))
     elif k in ("eq", "eqfx", "preset"):
         bars = 5
         gap = box.width() * 0.08
@@ -236,7 +296,7 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
             )
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(accent, max(2, size // 24)))
-    elif k in ("wave", "sound", "pad"):
+    elif k in ("wave", "sound", "pad", "vis"):
         mid = box.center()
         path = QPainterPath()
         path.moveTo(box.left(), mid.y())
@@ -257,6 +317,14 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
             mid.y(),
         )
         painter.drawPath(path)
+    elif k == "mono":
+        painter.drawEllipse(box.adjusted(box.width() * 0.18, box.height() * 0.18, -box.width() * 0.18, -box.height() * 0.18))
+        painter.drawLine(box.center().x(), box.top() + box.height() * 0.12, box.center().x(), box.bottom() - box.height() * 0.12)
+    elif k == "speed":
+        painter.drawLine(box.left() + box.width() * 0.18, box.bottom() - box.height() * 0.22, box.right() - box.width() * 0.18, box.bottom() - box.height() * 0.22)
+        painter.drawLine(box.left() + box.width() * 0.18, box.bottom() - box.height() * 0.22, box.left() + box.width() * 0.18, box.top() + box.height() * 0.55)
+        painter.drawLine(box.center().x(), box.bottom() - box.height() * 0.22, box.center().x(), box.top() + box.height() * 0.28)
+        painter.drawLine(box.right() - box.width() * 0.18, box.bottom() - box.height() * 0.22, box.right() - box.width() * 0.18, box.top() + box.height() * 0.18)
     elif k == "cable":
         painter.drawRoundedRect(
             box.adjusted(box.width() * 0.06, box.height() * 0.28, -box.width() * 0.06, -box.height() * 0.28),

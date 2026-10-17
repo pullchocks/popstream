@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from popstream.core.engine import Engine
 from popstream.core.icons import application_icon, tray_icon
 from popstream.core.store import close_to_tray, load_settings, save_settings
-from popstream.ui.canvas import DeviceCanvas
+from popstream.ui.canvas import DeviceCanvas, KeyPad
 from popstream.ui.catalog import ActionCatalog
 from popstream.ui.inspector import PropertyInspector
 from popstream.ui.settings_dialog import SettingsDialog
@@ -235,8 +235,12 @@ class MainWindow(QMainWindow):
         self.inspector.refresh()
 
     def _on_selection(self, _index: int) -> None:
+        focused = QApplication.focusWidget()
+        keep = isinstance(focused, (KeyPad, DeviceCanvas))
         self.canvas.refresh()
         self.inspector.refresh()
+        if keep:
+            self.canvas.focus_selected()
 
     def _on_brightness(self, _value: int) -> None:
         self.canvas.refresh()

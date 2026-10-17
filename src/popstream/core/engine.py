@@ -468,6 +468,17 @@ class Engine(QObject):
                 self.palette_changed.emit()
             self.selection_changed.emit(index)
 
+    def move_selected_key(self, dcol: int, drow: int) -> bool:
+        spec = self.current_spec()
+        count = spec.key_count
+        cols = max(1, spec.columns)
+        index = self.selected_key
+        nxt = index + drow * cols + dcol
+        if not (0 <= nxt < count):
+            return False
+        self.select_key(nxt)
+        return True
+
     def select_palette_action(self, plugin_id: str, action_id: str) -> None:
         if plugin_id != self.palette_plugin_id or action_id != self.palette_action_id:
             self.palette_plugin_id = plugin_id
@@ -826,6 +837,14 @@ class Engine(QObject):
             return ""
         return page.buttons[key].title or ""
 
+    def get_slot_icon_path(self, page_id: str, key: int) -> str:
+        if page_id == PALETTE_PAGE:
+            return ""
+        page = self.profile.page_by_id(page_id) if self.profile else None
+        if page is None or not (0 <= key < len(page.buttons)):
+            return ""
+        return page.buttons[key].icon_path or ""
+
     def set_settings(self, page_id: str, key: int, settings: dict[str, Any]) -> None:
         if page_id == PALETTE_PAGE:
             self.palette_settings = dict(settings)
@@ -855,7 +874,7 @@ class Engine(QObject):
             self._render_key(key)
             self.key_visual_changed.emit(key)
 
-    def set_runtime_image(self, page_id: str, key: int, image: QImage) -> None:
+    def set_runtime_image(self, page_id: str, key: int, image: QImage | None) -> None:
         bound = self._bound.get(self._bkey(page_id, key))
         if bound is None:
             return

@@ -70,6 +70,17 @@ class ActionContext:
     def slot_title(self) -> str:
         return str(self._host.get_slot_title(self.page_id, self.key) or "")
 
+    @property
+    def slot_icon_path(self) -> str:
+        getter = getattr(self._host, "get_slot_icon_path", None)
+        if callable(getter):
+            return str(getter(self.page_id, self.key) or "")
+        return ""
+
+    def current_spec(self) -> Any:
+        getter = getattr(self._host, "current_spec", None)
+        return getter() if callable(getter) else None
+
     def show_alert(self) -> None:
         self._host.show_alert(self.page_id, self.key)
 

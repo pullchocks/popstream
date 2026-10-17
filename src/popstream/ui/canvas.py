@@ -7,6 +7,7 @@ from PySide6.QtGui import (
     QColor,
     QDrag,
     QFont,
+    QKeyEvent,
     QLinearGradient,
     QMouseEvent,
     QPainter,
@@ -16,7 +17,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QGridLayout, QSizePolicy, QVBoxLayout, QWidget
 
 from popstream.core.engine import Engine
-from popstream.ui.theme import C, MIME_ACTION, MIME_KEY
+from popstream.ui.theme import C, MIME_ACTION, MIME_KEY, ui_font
 
 KEY_HINT = 78
 KEY_MIN = 52
@@ -66,6 +67,7 @@ class KeyPad(QWidget):
         self._drop_hover = False
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setFixedSize(KEY_HINT, KEY_HINT)
 
@@ -145,6 +147,16 @@ class KeyPad(QWidget):
             return
         self._press = event.position().toPoint()
         self.selected.emit(self.index)
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        canvas = self.parent()
+        while canvas is not None and not isinstance(canvas, DeviceCanvas):
+            canvas = canvas.parent()
+        if isinstance(canvas, DeviceCanvas) and canvas.nudge_from_key(event):
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._empty:
@@ -205,6 +217,7 @@ class DeviceCanvas(QWidget):
         self._hint = ""
         self._cell = KEY_HINT
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._outer = QVBoxLayout(self)
         self._outer.setContentsMargins(10, 8, 10, 8)
         self._face = QWidget(self)
@@ -278,6 +291,10 @@ class DeviceCanvas(QWidget):
         self._grid_host.setFixedSize(grid)
         self.update()
 
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        super().mousePressEvent(event)
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._apply_cell_size()
@@ -339,6 +356,32 @@ class DeviceCanvas(QWidget):
             self.engine.swap_keys(int(data["index"]), key.index)
             event.acceptProposedAction()
 
+    def focus_selected(self) -> None:
+        index = self.engine.selected_key
+        if 0 <= index < len(self._keys):
+            self._keys[index].setFocus(Qt.FocusReason.TabFocusReason)
+
+    def nudge_from_key(self, event: QKeyEvent) -> bool:
+        mapping = {
+            Qt.Key.Key_Left: (-1, 0),
+            Qt.Key.Key_Right: (1, 0),
+            Qt.Key.Key_Up: (0, -1),
+            Qt.Key.Key_Down: (0, 1),
+        }
+        delta = mapping.get(event.key())
+        if delta is None:
+            return False
+        moved = self.engine.move_selected_key(*delta)
+        if moved:
+            self.focus_selected()
+        return True
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self.nudge_from_key(event):
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def refresh(self, index: int | None = None) -> None:
         page = self.engine.current_page()
         targets = [index] if index is not None else range(len(self._keys))
@@ -373,8 +416,7 @@ class DeviceCanvas(QWidget):
         painter.setBrush(QColor("#151515"))
         painter.drawRoundedRect(well, 14, 14)
 
-        logo_font = QFont("Inter, Sans Serif", 10, QFont.Weight.Bold)
-        painter.setFont(logo_font)
+        painter.setFont(ui_font(13, QFont.Weight.Bold))
         painter.setPen(QColor(C.muted))
         logo_rect = QRectF(face.left(), face.bottom() - 40, face.width(), 22)
         painter.drawText(logo_rect, int(Qt.AlignmentFlag.AlignCenter), "POPSTREAM")
@@ -384,7 +426,7 @@ class DeviceCanvas(QWidget):
 
         if self._hint:
             painter.setPen(QColor(C.muted))
-            painter.setFont(QFont("Sans Serif", 8))
+            painter.setFont(ui_font(11, QFont.Weight.Normal))
             painter.drawText(
                 QRectF(face.left(), face.bottom() - 18, face.width(), 14),
                 int(Qt.AlignmentFlag.AlignCenter),

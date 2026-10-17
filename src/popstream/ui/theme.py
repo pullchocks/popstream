@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QApplication,
@@ -130,7 +130,7 @@ def stylesheet() -> str:
 QWidget {{
     background: {C.bg};
     color: {C.text};
-    font-family: "Inter", "Segoe UI", "Ubuntu", sans-serif;
+    font-family: "Noto Sans", sans-serif;
     font-size: 13px;
 }}
 QMainWindow, QDialog {{
@@ -396,10 +396,22 @@ QTabBar::tab:hover {{
 """
 
 
+FONT_FAMILY = "Noto Sans"
+
+
+def ui_font(pixel_size: int, weight: QFont.Weight = QFont.Weight.DemiBold) -> QFont:
+    font = QFont(FONT_FAMILY)
+    font.setPixelSize(max(1, int(pixel_size)))
+    font.setWeight(weight)
+    font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+    return font
+
+
 def apply_app_theme(app: QApplication | None = None) -> None:
     app = app or QApplication.instance()
     if app is None:
         return
+    app.setFont(ui_font(13, QFont.Weight.Normal))
     palette = app.palette()
     palette.setColor(QPalette.ColorRole.Window, QColor(C.bg))
     palette.setColor(QPalette.ColorRole.WindowText, QColor(C.text))

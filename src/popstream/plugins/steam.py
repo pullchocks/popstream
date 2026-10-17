@@ -15,10 +15,11 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QProcess, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QLineEdit, QPushButton, QWidget
 
 from popstream.core.plugin import Action, ActionContext, ActionInfo, Plugin
+from popstream.core.store import data_dir
 from popstream.ui.theme import fit_combo, tighten_form
 
 WISHLIST_TTL_S = 900
@@ -28,6 +29,8 @@ BROWSER_UA = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 _STEAMID_RE = re.compile(r"7656119\d{10}")
+_STEAMID64_BASE = 76561197960265728
+_AUTOLOGIN_RE = re.compile(r'"AutoLoginUser"\s+"([^"]+)"')
 _SKIP_GAME = (
     "proton ",
     "steam linux runtime",
@@ -67,6 +70,19 @@ _GAMES_CACHE: tuple[float, list[tuple[str, str]]] | None = None
 _STEAM_CMD: list[str] | None = None
 _STEAM_CMD_AT = 0.0
 _RESOLVE_CACHE: dict[str, tuple[float, str]] = {}
+_ART_MISS: set[str] = set()
+_ART_NAMES = (
+    "library_capsule.jpg",
+    "library_600x900.jpg",
+    "library_header.jpg",
+    "header.jpg",
+    "logo.png",
+)
+_ART_URLS = (
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/library_600x900.jpg",
+    "https://cdn.cloudflare.steamstatic.com/steam/apps/{appid}/header.jpg",
+    "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{appid}/library_600x900.jpg",
+)
 
 
 def parse_vdf(text: str) -> dict[str, Any]:
@@ -212,30 +228,127 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def logged_in_steamid() -> str:
+def _vdf_lookup(info: dict[str, Any]) -> dict[str, Any]:
+    return {str(key).lower(): value for key, value in info.items()}
+
+
+def _vdf_text(info: dict[str, Any], *keys: str) -> str:
+    lookup = _vdf_lookup(info)
+    for key in keys:
+        value = lookup.get(key.lower())
+        if value is None or isinstance(value, dict):
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _vdf_int(info: dict[str, Any], *keys: str) -> int:
+    text = _vdf_text(info, *keys)
+    try:
+        return int(text)
+    except ValueError:
+        return 0
+
+
+def _vdf_flag(info: dict[str, Any], *keys: str) -> bool:
+    return _vdf_text(info, *keys).lower() in {"1", "true", "yes"}
+
+
+def _account_id(steamid: str) -> str:
+    try:
+        value = int(steamid) - _STEAMID64_BASE
+    except ValueError:
+        return ""
+    return str(value) if value > 0 else ""
+
+
+def _userdata_mtime(account_id: str) -> float:
+    if not account_id:
+        return 0.0
+    best = 0.0
+    for root in steam_roots():
+        path = root / "userdata" / account_id / "config" / "localconfig.vdf"
+        try:
+            best = max(best, path.stat().st_mtime)
+        except OSError:
+            continue
+    return best
+
+
+def _registry_files() -> list[Path]:
+    home = Path.home()
+    paths = [
+        home / ".steam" / "registry.vdf",
+        home / ".var" / "app" / "com.valvesoftware.Steam" / ".steam" / "registry.vdf",
+    ]
+    for root in steam_roots():
+        paths.append(root / "registry.vdf")
+        paths.append(root.parent / "registry.vdf")
+    seen: set[str] = set()
+    out: list[Path] = []
+    for path in paths:
+        try:
+            ident = str(path.resolve()) if path.exists() else str(path)
+        except OSError:
+            ident = str(path)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        out.append(path)
+    return out
+
+
+def _autologin_account() -> str:
+    for path in _registry_files():
+        match = _AUTOLOGIN_RE.search(_read_text(path))
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _users_map(data: dict[str, Any]) -> dict[str, Any]:
+    nested = _vdf_lookup(data).get("users")
+    return nested if isinstance(nested, dict) else data
+
+
+def pick_logged_in_user(users: dict[str, Any], autologin: str = "") -> str:
+    wanted = autologin.strip().lower()
     best = ""
-    best_ts = -1
+    best_score = (-1, -1, -1.0)
+    matched = ""
+    for sid, info in _users_map(users).items():
+        ident = str(sid).strip()
+        if not ident.isdigit() or not isinstance(info, dict):
+            continue
+        account = _vdf_text(info, "AccountName")
+        if wanted and account.lower() == wanted:
+            matched = ident
+        recent = 1 if _vdf_flag(info, "MostRecent", "AutoLogin") else 0
+        stamp = _vdf_int(info, "Timestamp", "timestamp")
+        mtime = _userdata_mtime(_account_id(ident))
+        score = (recent, stamp, mtime)
+        if score >= best_score:
+            best_score = score
+            best = ident
+    return matched or best
+
+
+def logged_in_steamid() -> str:
+    merged: dict[str, Any] = {}
     for root in steam_roots():
         blob = _read_text(root / "config" / "loginusers.vdf")
         if not blob:
             continue
         data = parse_vdf(blob)
-        users = data.get("users") if isinstance(data.get("users"), dict) else data
-        if not isinstance(users, dict):
+        if not isinstance(data, dict):
             continue
-        for sid, info in users.items():
+        for sid, info in _users_map(data).items():
             ident = str(sid).strip()
-            if not ident.isdigit() or not isinstance(info, dict):
-                continue
-            if str(info.get("MostRecent") or "") in {"1", "true"}:
-                return ident
-            try:
-                stamp = int(str(info.get("Timestamp") or "0"))
-            except ValueError:
-                stamp = 0
-            if stamp >= best_ts:
-                best, best_ts = ident, stamp
-    return best
+            if ident.isdigit() and isinstance(info, dict):
+                merged[ident] = info
+    return pick_logged_in_user(merged, _autologin_account())
 
 
 def extract_steamid(raw: str) -> str:
@@ -364,6 +477,90 @@ def installed_games() -> list[tuple[str, str]]:
     games.sort(key=lambda item: item[1].lower())
     _GAMES_CACHE = (stamp, games)
     return games
+
+
+def _art_cache_dir() -> Path:
+    path = data_dir() / "steam-art"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def local_game_art(appid: str) -> Path | None:
+    ident = str(appid or "").strip()
+    if not ident:
+        return None
+    for root in steam_roots():
+        base = root / "appcache" / "librarycache" / ident
+        if not base.is_dir():
+            continue
+        for name in _ART_NAMES:
+            direct = base / name
+            if direct.is_file() and direct.stat().st_size > 2048:
+                return direct
+            try:
+                matches = list(base.rglob(name))
+            except OSError:
+                matches = []
+            for found in matches:
+                try:
+                    if found.is_file() and found.stat().st_size > 2048:
+                        return found
+                except OSError:
+                    continue
+    return None
+
+
+def _download_game_art(appid: str) -> Path | None:
+    ident = str(appid or "").strip()
+    if not ident or ident in _ART_MISS:
+        return None
+    for suffix in (".jpg", ".png"):
+        cached = _art_cache_dir() / f"{ident}{suffix}"
+        if cached.is_file() and cached.stat().st_size > 2048:
+            return cached
+    for template in _ART_URLS:
+        url = template.format(appid=ident)
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": BROWSER_UA})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                blob = response.read()
+        except (urllib.error.URLError, TimeoutError, OSError):
+            continue
+        if len(blob) < 2048:
+            continue
+        if blob.startswith(b"\x89PNG"):
+            cached = _art_cache_dir() / f"{ident}.png"
+        elif blob.startswith(b"\xff\xd8\xff"):
+            cached = _art_cache_dir() / f"{ident}.jpg"
+        else:
+            continue
+        cached.write_bytes(blob)
+        return cached
+    _ART_MISS.add(ident)
+    return None
+
+
+def resolve_game_art(appid: str) -> Path | None:
+    return local_game_art(appid) or _download_game_art(appid)
+
+
+def game_cover_image(appid: str, size: int) -> QImage | None:
+    path = resolve_game_art(appid)
+    if path is None:
+        return None
+    pix = QPixmap(str(path))
+    if pix.isNull():
+        return None
+    size = max(64, int(size or 72))
+    scaled = pix.scaled(
+        size,
+        size,
+        Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    x = max(0, (scaled.width() - size) // 2)
+    y = max(0, (scaled.height() - size) // 2)
+    return scaled.copy(x, y, size, size).toImage()
 
 
 @dataclass
@@ -560,14 +757,18 @@ class WishlistMonitor(QObject):
 
     def request(self, query: str, *, force: bool = False) -> None:
         ident = query.strip()
+        active = resolve_steamid(ident)
         now = time.time()
         with self._lock:
             if force:
                 if self._inflight:
                     return
             else:
+                same_user = self.snapshot.query == ident and (
+                    not active or self.snapshot.steamid == active
+                )
                 fresh = (
-                    self.snapshot.query == ident
+                    same_user
                     and self.snapshot.fetched_at > 0
                     and (now - self.snapshot.fetched_at) < WISHLIST_TTL_S
                     and not self.snapshot.error
@@ -666,9 +867,16 @@ class LaunchGameAction(Action):
     def _paint(self, ctx: ActionContext) -> None:
         if ctx.slot_title.strip():
             ctx.set_title(None)
+        else:
+            name = str(ctx.settings.get("name") or "").strip()
+            ctx.set_title(name[:18] if name else "Game")
+        if (ctx.slot_icon_path or "").strip():
+            ctx.set_image(None)
             return
-        name = str(ctx.settings.get("name") or "").strip()
-        ctx.set_title(name[:18] if name else "Game")
+        appid = str(ctx.settings.get("appid") or "").strip()
+        spec = ctx.current_spec()
+        size = int(getattr(spec, "key_size", 0) or 0) if spec is not None else 0
+        ctx.set_image(game_cover_image(appid, max(64, size or 72)))
 
     def key_down(self, ctx: ActionContext) -> None:
         appid = str(ctx.settings.get("appid") or "").strip()

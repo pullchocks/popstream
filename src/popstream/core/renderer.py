@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import (
     QColor,
-    QFont,
     QImage,
     QLinearGradient,
     QPainter,
@@ -17,7 +16,7 @@ from PySide6.QtGui import (
 from popstream.core.icons import icon_pixmap
 from popstream.core.profile import ButtonSlot
 from popstream.core.specs import DeviceSpec
-from popstream.ui.theme import C, contrast_on
+from popstream.ui.theme import C, contrast_on, ui_font
 
 
 @dataclass
@@ -142,9 +141,6 @@ def _draw_title(
     if align != "middle":
         painter.fillRect(bar, grad)
 
-    font = QFont("Inter, Segoe UI, Sans Serif")
-    font.setPixelSize(max(9, int(font_size * size / 72)))
-    font.setWeight(QFont.Weight.DemiBold)
-    painter.setFont(font)
+    painter.setFont(ui_font(max(9, int(font_size * size / 72))))
     painter.setPen(QPen(QColor(color)))
     painter.drawText(bar.adjusted(4, 2, -4, -4), int(v_align | Qt.TextFlag.TextWordWrap), text)
