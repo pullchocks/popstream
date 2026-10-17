@@ -23,6 +23,9 @@ from popstream.ui.theme import fit_combo, tighten_form
 
 USAGE_URL = "https://cursor.com/api/usage-summary"
 DASHBOARD_URL = "https://cursor.com/dashboard/usage"
+GROK_STATUS_URL = "https://cursor.com/api/dashboard/get-sand-usage-status"
+GROK_RPC_URL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus"
+GROK_DASHBOARD_URL = "https://cursor.com/dashboard"
 CACHE_TTL_S = 3600
 TICK_MS = 60_000
 LOW_PERCENT = 20
@@ -262,16 +265,36 @@ def parse_summary(data: dict[str, Any]) -> UsageSnapshot:
     )
 
 
-def _get_summary(cookie: str) -> tuple[int, str]:
+def _session_cookies() -> list[str]:
+    token = _read_access_token()
+    if not token:
+        return []
+    try:
+        encoded = _session_cookie(token)
+    except ValueError:
+        return []
+    user_id = unquote(encoded.split("%3A%3A", 1)[0])
+    return list(dict.fromkeys([encoded, f"{user_id}::{token}"]))
+
+
+def _http_json(url: str, *, cookie: str = "", bearer: str = "", body: bytes | None = None) -> tuple[int, str]:
+    headers = {
+        "Origin": "https://cursor.com",
+        "Referer": "https://cursor.com/dashboard",
+        "User-Agent": BROWSER_UA,
+        "Accept": "application/json",
+    }
+    if cookie:
+        headers["Cookie"] = f"WorkosCursorSessionToken={cookie}"
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    if body is not None:
+        headers["Content-Type"] = "application/json"
     request = urllib.request.Request(
-        USAGE_URL,
-        headers={
-            "Cookie": f"WorkosCursorSessionToken={cookie}",
-            "Origin": "https://cursor.com",
-            "Referer": "https://cursor.com/dashboard",
-            "User-Agent": BROWSER_UA,
-            "Accept": "application/json",
-        },
+        url,
+        data=body,
+        method="POST" if body is not None else "GET",
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=12) as response:
@@ -282,20 +305,28 @@ def _get_summary(cookie: str) -> tuple[int, str]:
         return 0, ""
 
 
-def fetch_usage() -> UsageSnapshot:
-    token = _read_access_token()
-    if not token:
-        return UsageSnapshot(error="Sign in to Cursor")
+def _load_json_usage(raw: str, parse, *, unavailable: str, sign_in: str = "Sign in to Cursor") -> UsageSnapshot:
     try:
-        encoded = _session_cookie(token)
-    except ValueError:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return UsageSnapshot(error=unavailable)
+    if not isinstance(payload, dict):
+        return UsageSnapshot(error=unavailable)
+    snap = parse(payload)
+    snap.fetched_at = time.time()
+    if snap.error and snap.error == "Sign in to Cursor":
+        snap.error = sign_in
+    return snap
+
+
+def fetch_usage() -> UsageSnapshot:
+    cookies = _session_cookies()
+    if not cookies:
         return UsageSnapshot(error="Sign in to Cursor")
-    user_id = unquote(encoded.split("%3A%3A", 1)[0])
-    cookies = [encoded, f"{user_id}::{token}"]
     status = 0
     raw = ""
-    for cookie in dict.fromkeys(cookies):
-        status, raw = _get_summary(cookie)
+    for cookie in cookies:
+        status, raw = _http_json(USAGE_URL, cookie=cookie)
         if status == 200:
             break
         if status in {401, 403}:
@@ -305,15 +336,59 @@ def fetch_usage() -> UsageSnapshot:
         if status in {401, 403}:
             return UsageSnapshot(error="Sign in to Cursor")
         return UsageSnapshot(error="Cursor usage unavailable")
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        return UsageSnapshot(error="Cursor usage unavailable")
-    if not isinstance(payload, dict):
-        return UsageSnapshot(error="Cursor usage unavailable")
-    snap = parse_summary(payload)
-    snap.fetched_at = time.time()
-    return snap
+    return _load_json_usage(raw, parse_summary, unavailable="Cursor usage unavailable")
+
+
+def parse_grok_status(data: dict[str, Any]) -> UsageSnapshot:
+    plan_name = str(
+        data.get("grokPlanLabel")
+        or data.get("includedUsageSuperGrokPlan")
+        or data.get("cursorPlanName")
+        or "Grok Bot"
+    ).strip() or "Grok Bot"
+    reset_at = _parse_timestamp(data.get("nextResetTimestampUtc"))
+    if reset_at is None:
+        start = _parse_timestamp(data.get("currentPeriodStart"))
+        if start is not None:
+            reset_at = start + 7 * 86400
+    if data.get("usesPooledEnterpriseAllowance") or data.get("includedLimitZero"):
+        return UsageSnapshot(error="No Grok Bot usage", plan=plan_name, reset_at=reset_at)
+    if data.get("hasNonZeroIncludedLimit") is False:
+        return UsageSnapshot(error="No Grok Bot usage", plan=plan_name, reset_at=reset_at)
+    used_pct = data.get("usagePercent")
+    if not isinstance(used_pct, (int, float)):
+        return UsageSnapshot(error="No usage numbers", plan=plan_name, reset_at=reset_at)
+    remaining_pct = max(0, int(round(100.0 - float(used_pct))))
+    return UsageSnapshot(
+        remaining_pct=remaining_pct,
+        used_pct=max(0, int(round(float(used_pct)))),
+        unlimited=False,
+        plan=plan_name,
+        reset_at=reset_at,
+    )
+
+
+def fetch_grok_usage() -> UsageSnapshot:
+    cookies = _session_cookies()
+    token = _read_access_token()
+    if not cookies and not token:
+        return UsageSnapshot(error="Sign in to Cursor")
+    status = 0
+    raw = ""
+    for cookie in cookies:
+        status, raw = _http_json(GROK_STATUS_URL, cookie=cookie, body=b"{}")
+        if status == 200:
+            break
+        if status in {401, 403}:
+            continue
+        break
+    if status != 200 and token:
+        status, raw = _http_json(GROK_RPC_URL, bearer=token, body=b"{}")
+    if status in {401, 403}:
+        return UsageSnapshot(error="Sign in to Cursor")
+    if status != 200:
+        return UsageSnapshot(error="Grok Bot usage unavailable")
+    return _load_json_usage(raw, parse_grok_status, unavailable="Grok Bot usage unavailable")
 
 
 class _FetchTask(QRunnable):
@@ -324,9 +399,9 @@ class _FetchTask(QRunnable):
 
     def run(self) -> None:
         try:
-            snap = fetch_usage()
+            snap = self._monitor._fetch()
         except Exception:
-            snap = UsageSnapshot(error="Cursor usage unavailable")
+            snap = UsageSnapshot(error=self._monitor.unavailable)
         self._monitor.finished.emit(snap)
 
 
@@ -334,9 +409,11 @@ class UsageMonitor(QObject):
     finished = Signal(object)
     changed = Signal()
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, fetch, unavailable: str, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self.snapshot = UsageSnapshot(error="Loading")
+        self._fetch = fetch
+        self.unavailable = unavailable
         self._lock = threading.Lock()
         self._inflight = False
         self._pool = QThreadPool(self)
@@ -371,17 +448,27 @@ class UsageMonitor(QObject):
 
 
 _MONITOR: UsageMonitor | None = None
+_GROK_MONITOR: UsageMonitor | None = None
 
 
 def monitor() -> UsageMonitor:
     global _MONITOR
     if _MONITOR is None:
-        _MONITOR = UsageMonitor()
+        _MONITOR = UsageMonitor(fetch_usage, "Cursor usage unavailable")
     return _MONITOR
+
+
+def grok_monitor() -> UsageMonitor:
+    global _GROK_MONITOR
+    if _GROK_MONITOR is None:
+        _GROK_MONITOR = UsageMonitor(fetch_grok_usage, "Grok Bot usage unavailable")
+    return _GROK_MONITOR
 
 
 class _CursorLiveAction(Action):
     kind = "usage"
+    dashboard = DASHBOARD_URL
+    get_monitor = staticmethod(monitor)
 
     def __init__(self) -> None:
         self._timer: QTimer | None = None
@@ -390,7 +477,7 @@ class _CursorLiveAction(Action):
 
     def will_appear(self, ctx: ActionContext) -> None:
         self._ctx = ctx
-        host = monitor()
+        host = self.get_monitor()
         if not self._watch:
             host.changed.connect(self._on_changed)
             self._watch = True
@@ -405,7 +492,7 @@ class _CursorLiveAction(Action):
         if self._timer is not None:
             self._timer.stop()
         if self._watch:
-            monitor().changed.disconnect(self._on_changed)
+            self.get_monitor().changed.disconnect(self._on_changed)
             self._watch = False
         self._ctx = None
 
@@ -418,11 +505,12 @@ class _CursorLiveAction(Action):
         if not press:
             press = "open" if ctx.settings.get("open_dashboard") else "refresh"
         if press == "open":
-            QDesktopServices.openUrl(QUrl(DASHBOARD_URL))
+            QDesktopServices.openUrl(QUrl(self.dashboard))
             ctx.show_ok()
             return
-        monitor().request(force=True)
-        snap = monitor().snapshot
+        host = self.get_monitor()
+        host.request(force=True)
+        snap = host.snapshot
         missing = snap.error and (
             (self.kind == "reset" and snap.reset_at is None)
             or (self.kind != "reset" and snap.remaining_pct is None and not snap.unlimited)
@@ -434,14 +522,15 @@ class _CursorLiveAction(Action):
         self._paint(ctx)
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
-        return _UsageInspector(ctx, parent, reset=self.kind == "reset")
+        return _UsageInspector(ctx, parent, reset=self.kind == "reset", grok=self.dashboard == GROK_DASHBOARD_URL)
 
     def _tick(self) -> None:
-        snap = monitor().snapshot
+        host = self.get_monitor()
+        snap = host.snapshot
         if snap.reset_at is not None and snap.reset_at <= time.time() and (time.time() - snap.fetched_at) > 60:
-            monitor().request(force=True)
+            host.request(force=True)
         else:
-            monitor().request()
+            host.request()
         if self._ctx is not None:
             self._paint(self._ctx)
 
@@ -450,7 +539,7 @@ class _CursorLiveAction(Action):
             self._paint(self._ctx)
 
     def _paint(self, ctx: ActionContext) -> None:
-        snap = monitor().snapshot
+        snap = self.get_monitor().snapshot
         if self.kind == "reset":
             ctx.set_state("danger" if snap.reset_soon() else "")
             mode = str(ctx.settings.get("display") or "countdown")
@@ -469,14 +558,36 @@ class CursorResetAction(_CursorLiveAction):
     kind = "reset"
 
 
+class GrokUsageAction(_CursorLiveAction):
+    kind = "usage"
+    dashboard = GROK_DASHBOARD_URL
+    get_monitor = staticmethod(grok_monitor)
+
+
+class GrokResetAction(_CursorLiveAction):
+    kind = "reset"
+    dashboard = GROK_DASHBOARD_URL
+    get_monitor = staticmethod(grok_monitor)
+
+
 class _UsageInspector(QWidget):
-    def __init__(self, ctx: ActionContext, parent=None, *, reset: bool = False) -> None:
+    def __init__(self, ctx: ActionContext, parent=None, *, reset: bool = False, grok: bool = False) -> None:
         super().__init__(parent)
         self._ctx = ctx
         self._reset = reset
         layout = QFormLayout(self)
         tighten_form(layout)
-        if reset:
+        if grok and reset:
+            hint = QLabel(
+                "The key shows when included Grok Bot usage resets this week. "
+                "It refreshes on its own about once an hour. Uses the Cursor account signed in on this machine."
+            )
+        elif grok:
+            hint = QLabel(
+                "The key shows included Grok Bot weekly usage as a percent. "
+                "It also refreshes on its own about once an hour. Uses the Cursor account signed in on this machine."
+            )
+        elif reset:
             hint = QLabel(
                 "The key shows when included Cursor usage resets this billing cycle. "
                 "It refreshes on its own about once an hour."
@@ -545,6 +656,20 @@ class UsagePlugin(Plugin):
                 "When included Cursor usage resets this billing cycle",
                 "reset",
             ),
+            ActionInfo(
+                "grok-bot",
+                "Grok Bot Usage",
+                "Usage",
+                "Included Grok Bot usage this week",
+                "usage",
+            ),
+            ActionInfo(
+                "grok-bot-reset",
+                "Grok Bot Reset",
+                "Usage",
+                "When included Grok Bot usage resets this week",
+                "reset",
+            ),
         ]
 
     def create_action(self, action_id: str) -> Action | None:
@@ -552,4 +677,8 @@ class UsagePlugin(Plugin):
             return CursorUsageAction()
         if action_id == "cursor-reset":
             return CursorResetAction()
+        if action_id == "grok-bot":
+            return GrokUsageAction()
+        if action_id == "grok-bot-reset":
+            return GrokResetAction()
         return None
