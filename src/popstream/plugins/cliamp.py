@@ -295,7 +295,14 @@ class PlayPauseAction(_LiveAction):
             return
         playing = bool(status and status.get("playing"))
         ctx.set_state("ok" if playing else "")
-        _keep_or_set(ctx, "PAUSE" if playing else "PLAY")
+        label = "Pause" if playing else "Play"
+        # The dropped key is titled "Play / Pause". That stock label has to
+        # give way so the button can show which press comes next.
+        stock = ctx.slot_title.strip().lower().replace(" ", "")
+        if stock in {"", "play/pause", "play", "pause"}:
+            ctx.set_title(label)
+        else:
+            ctx.set_title(None)
 
     def key_down(self, ctx: ActionContext) -> None:
         if not cliamp_ok("toggle"):

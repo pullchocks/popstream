@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QProcess, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QImage, QPixmap
+from PySide6.QtGui import QDesktopServices, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QLineEdit, QPushButton, QWidget
 
 from popstream.core.plugin import Action, ActionContext, ActionInfo, Plugin
@@ -555,11 +555,104 @@ def resolve_game_art(appid: str) -> Path | None:
     return local_game_art(appid) or _download_game_art(appid)
 
 
+def _row_textiness(image: QImage) -> list[float]:
+    width = image.width()
+    height = image.height()
+    rows: list[float] = []
+    for y in range(height):
+        previous = None
+        jumps = 0
+        for x in range(width):
+            color = image.pixelColor(x, y)
+            gray = (color.red() * 3 + color.green() * 6 + color.blue()) // 10
+            if previous is not None and abs(gray - previous) > 36:
+                jumps += 1
+            previous = gray
+        rows.append(float(jumps))
+    smoothed: list[float] = []
+    for index in range(height):
+        chunk = rows[max(0, index - 1) : index + 2]
+        smoothed.append(sum(chunk) / len(chunk))
+    return smoothed
+
+
+def _title_crop_y(pix: QPixmap, scaled_h: int, size: int) -> int:
+    """Shift a portrait cover so a title at the top or bottom stays in frame.
+
+    A centered square crop throws away the ends of a tall Steam capsule, which
+    is where the logo usually sits. If one of those ends is clearly busier
+    than the other, slide the frame just far enough to keep it.
+    """
+    max_off = max(0, scaled_h - size)
+    if max_off <= 2 or pix.width() <= 0 or scaled_h <= 0:
+        return max(0, max_off // 2)
+    probe = pix.scaled(
+        48,
+        max(8, int(48 * pix.height() / pix.width())),
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    ).toImage()
+    scores = _row_textiness(probe)
+    height = len(scores)
+    if height <= 4 or max(scores) < 3:
+        return max_off // 2
+    # Look slightly past the slice a centered crop would drop, so a logo that
+    # is only nicked still counts.
+    drop_frac = (max_off / 2) / scaled_h
+    look = min(0.30, drop_frac + 0.06)
+    rows = max(1, int(round(height * look)))
+    top_scores = scores[:rows]
+    bot_scores = scores[-rows:]
+    mid_scores = scores[rows : height - rows] or scores
+    top_peak = max(top_scores)
+    bot_peak = max(bot_scores)
+    mid_peak = max(mid_scores)
+
+    def looks_like_title(edge: float, other: float) -> bool:
+        return edge >= 8 and edge >= other * 1.25 and edge >= mid_peak * 0.7
+
+    chase_top = looks_like_title(top_peak, bot_peak)
+    chase_bottom = looks_like_title(bot_peak, top_peak)
+    if chase_top == chase_bottom:
+        return max_off // 2
+
+    pad = max(1, int(height * 0.045))
+    if chase_top:
+        threshold = top_peak * 0.4
+        first = next((index for index, score in enumerate(top_scores) if score >= threshold), 0)
+        start = max(0, first - pad) / height
+        origin = int(round(start * scaled_h))
+    else:
+        threshold = bot_peak * 0.4
+        last = height - 1
+        for index in range(height - 1, height - rows - 1, -1):
+            if scores[index] >= threshold:
+                last = index
+                break
+        end = min(height, last + 1 + pad) / height
+        origin = int(round(end * scaled_h)) - size
+    return max(0, min(max_off, origin))
+
+
 def _square_pixmap(path: Path, size: int) -> QPixmap | None:
     pix = QPixmap(str(path))
-    if pix.isNull():
+    if pix.isNull() or pix.width() <= 0 or pix.height() <= 0:
         return None
     size = max(16, int(size or 72))
+    # Wide headers are a title line. Cropping the sides would slice the words.
+    if pix.width() > pix.height() * 1.2:
+        fitted = pix.scaled(
+            size,
+            size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        framed = QPixmap(size, size)
+        framed.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(framed)
+        painter.drawPixmap((size - fitted.width()) // 2, (size - fitted.height()) // 2, fitted)
+        painter.end()
+        return framed
     scaled = pix.scaled(
         size,
         size,
@@ -567,7 +660,7 @@ def _square_pixmap(path: Path, size: int) -> QPixmap | None:
         Qt.TransformationMode.SmoothTransformation,
     )
     x = max(0, (scaled.width() - size) // 2)
-    y = max(0, (scaled.height() - size) // 2)
+    y = _title_crop_y(pix, scaled.height(), size)
     return scaled.copy(x, y, size, size)
 
 
