@@ -132,7 +132,11 @@ class ActionTile(QFrame):
         mime = QMimeData()
         settings = dict(self.action.defaults or {})
         engine = self.catalog.engine
-        if engine.palette_plugin_id == self.plugin_id and engine.palette_action_id == self.action.id:
+        if (
+            engine.palette_plugin_id == self.plugin_id
+            and engine.palette_action_id == self.action.id
+            and not str(self.action.id).startswith("launch:")
+        ):
             settings.update(engine.palette_settings)
         raw = action_payload(self.plugin_id, self.action.id, settings or None)
         mime.setData(MIME_ACTION, raw)

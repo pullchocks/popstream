@@ -45,6 +45,14 @@ def _draw_reset_arrow(painter: QPainter, box: QRectF) -> None:
 
 
 def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
+    raw = kind or "grid"
+    if raw.lower().startswith("steam:"):
+        from popstream.plugins.steam import game_icon_pixmap
+
+        cover = game_icon_pixmap(raw.split(":", 1)[1], size)
+        if cover is not None and not cover.isNull():
+            return cover
+        raw = "game"
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pm)
@@ -55,7 +63,7 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
     painter.setBrush(Qt.BrushStyle.NoBrush)
     m = size * 0.22
     box = QRectF(m, m, size - 2 * m, size - 2 * m)
-    k = (kind or "grid").lower()
+    k = raw.lower()
 
     if k in ("globe", "url"):
         painter.drawEllipse(box)

@@ -71,6 +71,13 @@ class ActionContext:
         return str(self._host.get_slot_title(self.page_id, self.key) or "")
 
     @property
+    def action_id(self) -> str:
+        getter = getattr(self._host, "get_action_id", None)
+        if callable(getter):
+            return str(getter(self.page_id, self.key) or "")
+        return ""
+
+    @property
     def slot_icon_path(self) -> str:
         getter = getattr(self._host, "get_slot_icon_path", None)
         if callable(getter):

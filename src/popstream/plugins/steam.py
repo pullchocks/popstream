@@ -71,6 +71,8 @@ _STEAM_CMD: list[str] | None = None
 _STEAM_CMD_AT = 0.0
 _RESOLVE_CACHE: dict[str, tuple[float, str]] = {}
 _ART_MISS: set[str] = set()
+_ART_PATH: dict[str, str] = {}
+_ICON_CACHE: dict[tuple[str, int], QPixmap] = {}
 _ART_NAMES = (
     "library_capsule.jpg",
     "library_600x900.jpg",
@@ -489,6 +491,15 @@ def local_game_art(appid: str) -> Path | None:
     ident = str(appid or "").strip()
     if not ident:
         return None
+    if ident in _ART_PATH:
+        cached = _ART_PATH[ident]
+        return Path(cached) if cached else None
+    found = _find_local_art(ident)
+    _ART_PATH[ident] = str(found) if found is not None else ""
+    return found
+
+
+def _find_local_art(ident: str) -> Path | None:
     for root in steam_roots():
         base = root / "appcache" / "librarycache" / ident
         if not base.is_dir():
@@ -544,14 +555,11 @@ def resolve_game_art(appid: str) -> Path | None:
     return local_game_art(appid) or _download_game_art(appid)
 
 
-def game_cover_image(appid: str, size: int) -> QImage | None:
-    path = resolve_game_art(appid)
-    if path is None:
-        return None
+def _square_pixmap(path: Path, size: int) -> QPixmap | None:
     pix = QPixmap(str(path))
     if pix.isNull():
         return None
-    size = max(64, int(size or 72))
+    size = max(16, int(size or 72))
     scaled = pix.scaled(
         size,
         size,
@@ -560,7 +568,42 @@ def game_cover_image(appid: str, size: int) -> QImage | None:
     )
     x = max(0, (scaled.width() - size) // 2)
     y = max(0, (scaled.height() - size) // 2)
-    return scaled.copy(x, y, size, size).toImage()
+    return scaled.copy(x, y, size, size)
+
+
+def game_icon_pixmap(appid: str, size: int) -> QPixmap | None:
+    ident = str(appid or "").strip()
+    if not ident:
+        return None
+    key = (ident, max(16, int(size or 72)))
+    cached = _ICON_CACHE.get(key)
+    if cached is not None:
+        return None if cached.isNull() else cached
+    path = local_game_art(ident)
+    pix = _square_pixmap(path, key[1]) if path is not None else None
+    _ICON_CACHE[key] = pix if pix is not None else QPixmap()
+    return pix
+
+
+def game_cover_image(appid: str, size: int) -> QImage | None:
+    pix = game_icon_pixmap(appid, size)
+    if pix is None:
+        path = _download_game_art(appid)
+        pix = _square_pixmap(path, size) if path is not None else None
+        if pix is not None:
+            _ICON_CACHE[(str(appid).strip(), max(16, int(size or 72)))] = pix
+    if pix is None or pix.isNull():
+        return None
+    return pix.toImage()
+
+
+def _game_appid(ctx: ActionContext) -> str:
+    action_id = ctx.action_id
+    if action_id.startswith("launch:"):
+        ident = action_id.split(":", 1)[1].strip()
+        if ident.isdigit():
+            return ident
+    return str(ctx.settings.get("appid") or "").strip()
 
 
 @dataclass
@@ -873,13 +916,13 @@ class LaunchGameAction(Action):
         if (ctx.slot_icon_path or "").strip():
             ctx.set_image(None)
             return
-        appid = str(ctx.settings.get("appid") or "").strip()
+        appid = _game_appid(ctx)
         spec = ctx.current_spec()
         size = int(getattr(spec, "key_size", 0) or 0) if spec is not None else 0
         ctx.set_image(game_cover_image(appid, max(64, size or 72)))
 
     def key_down(self, ctx: ActionContext) -> None:
-        appid = str(ctx.settings.get("appid") or "").strip()
+        appid = _game_appid(ctx)
         if not appid:
             ctx.show_alert()
             return
@@ -888,7 +931,9 @@ class LaunchGameAction(Action):
             return
         ctx.show_ok()
 
-    def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
+    def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget | None:
+        if ctx.action_id.startswith("launch:"):
+            return None
         return _GameInspector(ctx, parent)
 
 
@@ -1141,19 +1186,16 @@ class _GameInspector(QWidget):
         self.combo.clear()
         if not games:
             self.combo.addItem("No installed Steam games", "")
+        else:
+            self.combo.addItem("Select a game", "")
         for appid, name in games:
             self.combo.addItem(name, appid)
         if current and current not in live:
             label = str(self._ctx.settings.get("name") or current)
             self.combo.addItem(f"{label}  (missing)", current)
         index = self.combo.findData(current)
-        if index < 0 and games:
-            index = 0
-        if index >= 0:
-            self.combo.setCurrentIndex(index)
+        self.combo.setCurrentIndex(index if index >= 0 else 0)
         self.combo.blockSignals(False)
-        if not current and games:
-            self._save()
 
     def _save(self) -> None:
         settings = dict(self._ctx.settings)
@@ -1212,7 +1254,6 @@ class SteamPlugin(Plugin):
                 "Open Steam Big Picture",
                 "steam",
             ),
-            ActionInfo("launch", "Launch Game", "Steam", "Launch an installed Steam game", "game"),
             ActionInfo("wishlist", "Wishlist", "Steam", "Open your Steam wishlist", "wish"),
             ActionInfo(
                 "sales",
@@ -1244,7 +1285,7 @@ class SteamPlugin(Plugin):
                     name,
                     "Steam / Games",
                     f"Launch {name}",
-                    "game",
+                    f"steam:{appid}",
                     defaults={"appid": appid, "name": name},
                 )
             )

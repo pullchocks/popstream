@@ -829,6 +829,14 @@ class Engine(QObject):
             return {}
         return dict(page.buttons[key].settings)
 
+    def get_action_id(self, page_id: str, key: int) -> str:
+        if page_id == PALETTE_PAGE:
+            return self.palette_action_id
+        page = self.profile.page_by_id(page_id) if self.profile else None
+        if page is None or not (0 <= key < len(page.buttons)):
+            return ""
+        return page.buttons[key].action_id or ""
+
     def get_slot_title(self, page_id: str, key: int) -> str:
         if page_id == PALETTE_PAGE:
             return ""
