@@ -28,7 +28,7 @@ Optional companions:
 - **Bloop**: soundboard keys (must be running)
 - **Cliamp**: music player keys (must be running)
 - **eqFX**: EQ preset keys
-- **Cursor**: Usage and Grok Bot keys (uses the account signed into the Cursor app on this machine)
+- **Cursor**: Cursor Usage and Grok Bot Usage keys (uses the account signed into the Cursor app on this machine)
 - **Steam**: client keys (`steam` on PATH, or Flatpak `com.valvesoftware.Steam`). Wishlist sale and release counts need a public wishlist.
 - `hyprctl` / `swaymsg` / `wmctrl`: Move to Monitor on Hyprland, Sway, or X11
 
@@ -94,7 +94,7 @@ Mute, missing devices, and the active **Set Output** / **Set Input** show on the
 | Clock | Clock, Date, Big Time (one lock-style digit per key), Big Date (one lock-style letter per key) |
 | Audio | Set Output, Set Input, Fix Mic, Mic Check, EQ Preset, volume / mute, Play / Pause, skip, stop |
 | Battery | Device Battery (UPower) |
-| Usage | Cursor Usage (included usage this billing cycle; remaining or used), Cursor Reset (when that cycle resets), Grok Bot Usage (included weekly usage), Grok Bot Reset (when that week resets) |
+| Usage | Cursor Usage (included usage this billing cycle on one key; percent remaining or used, with the reset under the percent), Grok Bot Usage (included weekly usage on one key; percent remaining or used, with the reset under the percent), Claude 5 Hour Usage (rolling 5 hour usage on one key; percent remaining or used, with the reset under the percent), Claude Weekly Usage (weekly usage on one key; percent remaining or used, with the reset under the percent) |
 | Bloop | Play Sound, Play / Stop, Stop All, Play Random, volume, Cable, Now Playing. Sound folders sit under Bloop after Now Playing so you can expand a category and drop a clip onto a key. |
 | Cliamp | Play / Pause, Now Playing, skip, seek, stop, volume, shuffle, repeat, mono, speed, visualizer, playlist, EQ. Saved playlists and EQ presets also appear under Cliamp after you expand those groups. |
 | Steam | Open Steam, Friends, Library, Store, Downloads, Big Picture, Wishlist, Wishlist Sales, Wishlist Releases, Status. Installed games also appear under Steam after you expand Games. |

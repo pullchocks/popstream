@@ -19,6 +19,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QComboBox, QFormLayout, QLabel, QWidget
 
 from popstream.core.plugin import Action, ActionContext, ActionInfo, Plugin
+from popstream.plugins.claude_usage import ClaudeUsageAction, ClaudeWeekAction, WindowFace, render_meter, reset_face
 from popstream.ui.theme import fit_combo, tighten_form
 
 USAGE_URL = "https://cursor.com/api/usage-summary"
@@ -163,6 +164,17 @@ class UsageSnapshot:
         if self.reset_at is None:
             return False
         return 0 < (self.reset_at - time.time()) <= 86400
+
+
+def meter_face(snap: UsageSnapshot, mode: str = "remaining", label: str = "Cur", now: float | None = None) -> WindowFace:
+    """One window on the key: short name, percent, then a short reset."""
+    if mode not in {"remaining", "used"}:
+        mode = "remaining"
+    if snap.error == "Loading":
+        return WindowFace(label, "…", "…")
+    amount = "—" if snap.error else snap.title(mode)
+    reset = reset_face(snap.reset_at, now) if snap.reset_at is not None else ""
+    return WindowFace(label, amount, reset or "—")
 
 
 def _percent_from_message(message: str) -> float | None:
@@ -466,7 +478,7 @@ def grok_monitor() -> UsageMonitor:
 
 
 class _CursorLiveAction(Action):
-    kind = "usage"
+    label = "Cur"
     dashboard = DASHBOARD_URL
     get_monitor = staticmethod(monitor)
 
@@ -474,6 +486,7 @@ class _CursorLiveAction(Action):
         self._timer: QTimer | None = None
         self._ctx: ActionContext | None = None
         self._watch = False
+        self._stamp: tuple | None = None
 
     def will_appear(self, ctx: ActionContext) -> None:
         self._ctx = ctx
@@ -495,9 +508,11 @@ class _CursorLiveAction(Action):
             self.get_monitor().changed.disconnect(self._on_changed)
             self._watch = False
         self._ctx = None
+        self._stamp = None
 
     def settings_did_change(self, ctx: ActionContext) -> None:
         self._ctx = ctx
+        self._stamp = None
         self._paint(ctx)
 
     def key_down(self, ctx: ActionContext) -> None:
@@ -511,18 +526,15 @@ class _CursorLiveAction(Action):
         host = self.get_monitor()
         host.request(force=True)
         snap = host.snapshot
-        missing = snap.error and (
-            (self.kind == "reset" and snap.reset_at is None)
-            or (self.kind != "reset" and snap.remaining_pct is None and not snap.unlimited)
-        )
-        if missing:
-            ctx.show_alert()
-        else:
+        known = snap.unlimited or snap.remaining_pct is not None
+        if known:
             ctx.show_ok()
+        else:
+            ctx.show_alert()
         self._paint(ctx)
 
     def create_property_inspector(self, ctx: ActionContext, parent: QWidget) -> QWidget:
-        return _UsageInspector(ctx, parent, reset=self.kind == "reset", grok=self.dashboard == GROK_DASHBOARD_URL)
+        return _UsageInspector(ctx, parent, grok=self.dashboard == GROK_DASHBOARD_URL)
 
     def _tick(self) -> None:
         host = self.get_monitor()
@@ -540,75 +552,74 @@ class _CursorLiveAction(Action):
 
     def _paint(self, ctx: ActionContext) -> None:
         snap = self.get_monitor().snapshot
-        if self.kind == "reset":
-            ctx.set_state("danger" if snap.reset_soon() else "")
-            mode = str(ctx.settings.get("display") or "countdown")
-            ctx.set_title(snap.reset_title(mode))
-            return
-        ctx.set_state("danger" if snap.low() else "")
         mode = str(ctx.settings.get("display") or "remaining")
-        ctx.set_title(snap.title(mode))
+        if mode not in {"remaining", "used"}:
+            mode = "remaining"
+        face = meter_face(snap, mode, self.label)
+        low = snap.low()
+        spec = ctx.current_spec()
+        if spec is not None and not getattr(spec, "has_lcd", True):
+            size = 72
+        else:
+            size = max(64, int(getattr(spec, "key_size", 0) or 72)) if spec is not None else 72
+        stamp = (face, low, size)
+        if stamp == self._stamp:
+            return
+        self._stamp = stamp
+        ctx.set_state("danger" if low or snap.reset_soon() else "")
+        # The stock title strip is one bar. An empty title leaves this image as the whole key.
+        ctx.set_title("")
+        ctx.set_image(render_meter(size, face, low))
 
 
 class CursorUsageAction(_CursorLiveAction):
-    kind = "usage"
+    label = "Cur"
 
 
-class CursorResetAction(_CursorLiveAction):
-    kind = "reset"
+class CursorResetAction(CursorUsageAction):
+    """Old catalog id. Same condensed face as Cursor Usage."""
 
 
 class GrokUsageAction(_CursorLiveAction):
-    kind = "usage"
+    label = "Grok"
     dashboard = GROK_DASHBOARD_URL
     get_monitor = staticmethod(grok_monitor)
 
 
-class GrokResetAction(_CursorLiveAction):
-    kind = "reset"
-    dashboard = GROK_DASHBOARD_URL
-    get_monitor = staticmethod(grok_monitor)
+class GrokResetAction(GrokUsageAction):
+    """Old catalog id. Same condensed face as Grok Bot Usage."""
 
 
 class _UsageInspector(QWidget):
-    def __init__(self, ctx: ActionContext, parent=None, *, reset: bool = False, grok: bool = False) -> None:
+    def __init__(self, ctx: ActionContext, parent=None, *, grok: bool = False) -> None:
         super().__init__(parent)
         self._ctx = ctx
-        self._reset = reset
         layout = QFormLayout(self)
         tighten_form(layout)
-        if grok and reset:
+        if grok:
             hint = QLabel(
-                "The key shows when included Grok Bot usage resets this week. "
-                "It refreshes on its own about once an hour. Uses the Cursor account signed in on this machine."
-            )
-        elif grok:
-            hint = QLabel(
-                "The key shows included Grok Bot weekly usage as a percent. "
-                "It also refreshes on its own about once an hour. Uses the Cursor account signed in on this machine."
-            )
-        elif reset:
-            hint = QLabel(
-                "The key shows when included Cursor usage resets this billing cycle. "
-                "It refreshes on its own about once an hour."
+                "One key shows included Grok Bot usage for this week. "
+                "Grok is the short name, then the percent, then when that week resets. "
+                "Show sets remaining or used. "
+                "It refreshes on its own about once an hour. "
+                "Uses the Cursor account signed in on this machine."
             )
         else:
             hint = QLabel(
-                "The key shows included Cursor Models usage as a percent. "
-                "It also refreshes on its own about once an hour."
+                "One key shows included Cursor usage for this billing cycle. "
+                "Cur is the short name, then the percent, then when that cycle resets. "
+                "Show sets remaining or used. "
+                "It refreshes on its own about once an hour. "
+                "Uses the Cursor account signed in on this machine."
             )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
         self.display = fit_combo(QComboBox())
-        if reset:
-            self.display.addItem("Time left", "countdown")
-            self.display.addItem("Reset date", "date")
-            self.display.addItem("Both", "both")
-            display = str(ctx.settings.get("display") or "countdown")
-        else:
-            self.display.addItem("Remaining", "remaining")
-            self.display.addItem("Used", "used")
-            display = str(ctx.settings.get("display") or "remaining")
+        self.display.addItem("Remaining", "remaining")
+        self.display.addItem("Used", "used")
+        display = str(ctx.settings.get("display") or "remaining")
+        if display not in {"remaining", "used"}:
+            display = "remaining"
         index = self.display.findData(display)
         self.display.setCurrentIndex(index if index >= 0 else 0)
         self.display.currentIndexChanged.connect(self._save)
@@ -627,8 +638,7 @@ class _UsageInspector(QWidget):
 
     def _save(self) -> None:
         settings = dict(self._ctx.settings)
-        fallback = "countdown" if self._reset else "remaining"
-        settings["display"] = self.display.currentData() or fallback
+        settings["display"] = self.display.currentData() or "remaining"
         settings["on_press"] = self.press.currentData() or "refresh"
         settings.pop("open_dashboard", None)
         self._ctx.set_settings(settings)
@@ -646,29 +656,33 @@ class UsagePlugin(Plugin):
                 "cursor",
                 "Cursor Usage",
                 "Usage",
-                "Included Cursor usage this billing cycle",
+                "Included Cursor usage this billing cycle, with the reset under the percent",
                 "cursor",
-            ),
-            ActionInfo(
-                "cursor-reset",
-                "Cursor Reset",
-                "Usage",
-                "When included Cursor usage resets this billing cycle",
-                "cursor-reset",
+                defaults={"display": "remaining", "on_press": "refresh"},
             ),
             ActionInfo(
                 "grok-bot",
                 "Grok Bot Usage",
                 "Usage",
-                "Included Grok Bot usage this week",
+                "Included Grok Bot usage this week, with the reset under the percent",
                 "grok",
+                defaults={"display": "remaining", "on_press": "refresh"},
             ),
             ActionInfo(
-                "grok-bot-reset",
-                "Grok Bot Reset",
+                "claude",
+                "Claude 5 Hour Usage",
                 "Usage",
-                "When included Grok Bot usage resets this week",
-                "grok-reset",
+                "Claude usage for the rolling 5 hour window, with the reset under the percent",
+                "claude",
+                defaults={"display": "remaining", "on_press": "refresh"},
+            ),
+            ActionInfo(
+                "claude-week",
+                "Claude Weekly Usage",
+                "Usage",
+                "Claude usage for this week, with the reset under the percent",
+                "claude",
+                defaults={"display": "remaining", "on_press": "refresh"},
             ),
         ]
 
@@ -681,4 +695,8 @@ class UsagePlugin(Plugin):
             return GrokUsageAction()
         if action_id == "grok-bot-reset":
             return GrokResetAction()
+        if action_id == "claude":
+            return ClaudeUsageAction()
+        if action_id == "claude-week":
+            return ClaudeWeekAction()
         return None

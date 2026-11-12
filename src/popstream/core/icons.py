@@ -272,6 +272,21 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
         painter.drawPath(_star_path(box))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(accent, max(2, size // 24)))
+    elif k == "claude":
+        cx, cy = box.center().x(), box.center().y()
+        radius = min(box.width(), box.height()) * 0.48
+        spokes = (
+            (0.0, -1.0, 1.0),
+            (0.72, -0.72, 0.46),
+            (1.0, 0.0, 1.0),
+            (0.72, 0.72, 0.46),
+            (0.0, 1.0, 1.0),
+            (-0.72, 0.72, 0.46),
+            (-1.0, 0.0, 1.0),
+            (-0.72, -0.72, 0.46),
+        )
+        for dx, dy, scale in spokes:
+            painter.drawLine(cx, cy, cx + dx * radius * scale, cy + dy * radius * scale)
     elif k == "cursor-reset":
         _draw_reset_arrow(painter, box)
         inner = box.adjusted(box.width() * 0.30, box.height() * 0.30, -box.width() * 0.30, -box.height() * 0.30)
