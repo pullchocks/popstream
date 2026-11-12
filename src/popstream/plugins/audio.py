@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import threading
@@ -10,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,20 +27,58 @@ from popstream.core.plugin import Action, ActionContext, ActionInfo, Plugin
 from popstream.ui.theme import C, ui_font, fit_combo, plain_spin, tighten_form
 
 
+def _kill_proc(proc: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            return
+    try:
+        proc.wait(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        return
+
+
+def _pulse_clients_paused() -> bool:
+    return time.monotonic() < _audio_pause_until
+
+
+def _pause_pulse_clients() -> None:
+    global _audio_pause_until
+    _audio_pause_until = time.monotonic() + 10.0
+
+
 def _run_bin(name: str, *args: str) -> tuple[int, str]:
+    # pactl/wpctl block inside the kernel while the Wave:3 control transfer
+    # is stuck. Once one of them misses its deadline, further calls from a
+    # key or a timer would freeze the deck for the whole timeout.
+    if name in {"pactl", "wpctl"} and _pulse_clients_paused():
+        return 1, ""
     binary = shutil.which(name)
     if not binary:
         return 1, ""
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [binary, *args],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
-            timeout=2,
+            start_new_session=True,
         )
-        return result.returncode, (result.stdout or "").strip()
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return 1, ""
+    try:
+        out, _ = proc.communicate(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        # A stuck PipeWire client can ignore the wait after SIGKILL while a
+        # USB device is wedged. Do not sit on the caller after the deadline.
+        _kill_proc(proc)
+        if name in {"pactl", "wpctl"}:
+            _pause_pulse_clients()
+        return 1, ""
+    return proc.returncode, (out or "").strip()
 
 
 def _pactl(*args: str) -> tuple[int, str]:
@@ -58,6 +98,15 @@ def _playerctl(*args: str) -> tuple[int, str]:
 
 
 def _json_list(kind: str) -> list[dict[str, Any]]:
+    if _cache_only():
+        key = {
+            "sinks": "sinks",
+            "sources": "sources",
+            "sink-inputs": "sink_inputs",
+            "source-outputs": "source_outputs",
+        }.get(kind, "")
+        rows = (_SNAP or {}).get(key) or []
+        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
     code, out = _pactl("--format=json", "list", kind)
     if code != 0 or not out:
         return []
@@ -73,6 +122,27 @@ _ENDPOINT_TAIL = re.compile(
 )
 _SNAP_TTL = 0.8
 _SNAP: dict[str, Any] | None = None
+_refresh_lock = threading.Lock()
+_refreshing = False
+_audio_pause_until = 0.0
+_cache_state = threading.local()
+_HUB: "_AudioHub | None" = None
+
+
+def _cache_only() -> bool:
+    return bool(getattr(_cache_state, "on", False))
+
+
+class _AudioHub(QObject):
+    updated = Signal()
+
+
+def _hub() -> _AudioHub:
+    global _HUB
+    if _HUB is None:
+        _HUB = _AudioHub()
+        _HUB.updated.connect(_LiveAction._paint_cached)
+    return _HUB
 
 
 def card_key(name: str) -> str:
@@ -93,14 +163,45 @@ def _invalidate_snap() -> None:
     _SNAP = None
 
 
-def _snapshot(*, force: bool = False) -> dict[str, Any]:
-    global _SNAP
-    now = time.monotonic()
-    if not force and _SNAP is not None and now - float(_SNAP["at"]) < _SNAP_TTL:
-        return _SNAP
-    _SNAP = {
-        "at": now,
-        "sinks": _json_list("sinks"),
+def _empty_snap() -> dict[str, Any]:
+    return {
+        "at": 0.0,
+        "ok": False,
+        "sinks": [],
+        "sources": [],
+        "sink_inputs": [],
+        "source_outputs": [],
+        "default_sink": "",
+        "default_source": "",
+        "alsa_cap": {},
+        "wpctl_mute": {},
+    }
+
+
+def _pulse_known() -> bool:
+    """True once a Pulse listing has actually come back.
+
+    A timed-out listing is not an empty device list. Callers that paint
+    "missing" or "muted" from an empty list have to be able to tell those apart.
+    """
+    return bool(_SNAP and _SNAP.get("ok"))
+
+
+def _collect_snapshot() -> dict[str, Any] | None:
+    if _pulse_clients_paused():
+        return None
+    started = time.monotonic()
+    sinks = _json_list("sinks")
+    # A wedged PipeWire client sits for the whole timeout. Stop after that
+    # first miss so the poll does not queue more clients that cannot be reaped,
+    # and do not publish the miss as "no devices".
+    if not sinks and time.monotonic() - started > 0.4:
+        _pause_pulse_clients()
+        return None
+    return {
+        "at": time.monotonic(),
+        "ok": True,
+        "sinks": sinks,
         "sources": _json_list("sources"),
         "sink_inputs": _json_list("sink-inputs"),
         "source_outputs": _json_list("source-outputs"),
@@ -109,7 +210,52 @@ def _snapshot(*, force: bool = False) -> dict[str, Any]:
         "alsa_cap": {},
         "wpctl_mute": {},
     }
+
+
+def _snapshot(*, force: bool = False) -> dict[str, Any]:
+    if _cache_only():
+        return _SNAP if _SNAP is not None else _empty_snap()
+    now = time.monotonic()
+    fresh = _SNAP is not None and now - float(_SNAP["at"]) < _SNAP_TTL
+    if force or not fresh:
+        # The deck thread only reads. Collecting here blocks key presses for
+        # the whole pactl timeout while WirePlumber is stuck in usb_control_msg.
+        _schedule_refresh()
+    if _SNAP is None:
+        return _empty_snap()
     return _SNAP
+
+
+def _schedule_refresh() -> None:
+    """Refresh Pulse state off the thread that handles deck and window input."""
+    global _refreshing
+    if time.monotonic() < _audio_pause_until:
+        return
+    hub = _hub()
+    with _refresh_lock:
+        if _refreshing:
+            return
+        _refreshing = True
+
+    def work() -> None:
+        global _refreshing, _SNAP
+        try:
+            snap = _collect_snapshot()
+            if snap is not None:
+                _SNAP = snap
+            elif _SNAP is None or not _SNAP.get("ok"):
+                failed = _empty_snap()
+                failed["at"] = time.monotonic()
+                _SNAP = failed
+        finally:
+            with _refresh_lock:
+                _refreshing = False
+        try:
+            hub.updated.emit()
+        except RuntimeError:
+            return
+
+    threading.Thread(target=work, name="popstream-audio", daemon=True).start()
 
 
 def _live_rows(kind: str) -> list[dict[str, Any]]:
@@ -511,32 +657,46 @@ def fix_microphone(settings: dict[str, Any]) -> bool:
     return ok
 
 
+def _percent_from_volume(volume: Any) -> int | None:
+    if not isinstance(volume, dict):
+        return None
+    for channel in volume.values():
+        if not isinstance(channel, dict):
+            continue
+        found = re.search(r"(\d+)", str(channel.get("value_percent") or ""))
+        if found:
+            return int(found.group(1))
+    return None
+
+
 def _volume_of(target: str) -> int:
+    cached = _percent_from_volume((_find_device("sink", target) or {}).get("volume"))
+    if cached is not None:
+        return cached
+    if _cache_only():
+        return 0
     _, out = _pactl("get-sink-volume", target)
     match = re.search(r"(\d+)%", out)
-    if match:
-        return int(match.group(1))
-    entry = _find_device("sink", target)
-    if entry:
-        volume = entry.get("volume")
-        if isinstance(volume, dict):
-            for channel in volume.values():
-                if not isinstance(channel, dict):
-                    continue
-                found = re.search(r"(\d+)", str(channel.get("value_percent") or ""))
-                if found:
-                    return int(found.group(1))
-    return 0
+    return int(match.group(1)) if match else 0
+
+
+def _pulse_muted(kind: str, target: str) -> bool:
+    entry = _find_device("sink" if kind == "sink" else "source", target)
+    if entry is not None and "mute" in entry:
+        return bool(entry.get("mute"))
+    if _cache_only():
+        return False
+    command = "get-sink-mute" if kind == "sink" else "get-source-mute"
+    _, out = _pactl(command, target)
+    return "yes" in out.lower()
 
 
 def _muted(target: str) -> bool:
-    _, out = _pactl("get-sink-mute", target)
-    return "yes" in out.lower()
+    return _pulse_muted("sink", target)
 
 
 def _source_muted(target: str) -> bool:
-    _, out = _pactl("get-source-mute", target)
-    return "yes" in out.lower()
+    return _pulse_muted("source", target)
 
 
 _MIXER_HEAD = re.compile(r"Simple mixer control '([^']+)',(\d+)")
@@ -649,9 +809,9 @@ def endpoint_muted(kind: str, name: str, entry: dict[str, Any] | None) -> bool:
     card = _alsa_card(entry)
     alsa = _snapshot().setdefault("alsa_cap", {})
     if card:
-        if card not in alsa:
+        if card not in alsa and not _cache_only():
             alsa[card] = _alsa_capture_muted(card)
-        if alsa[card] is True:
+        if alsa.get(card) is True:
             return True
     return False
 
@@ -729,9 +889,9 @@ def _hush_chain_muted() -> bool:
         node = _node_id(hush)
         if node:
             cached = _snapshot().setdefault("wpctl_mute", {})
-            if node not in cached:
+            if node not in cached and not _cache_only():
                 cached[node] = _wpctl_muted(node)
-            if cached[node] is True:
+            if cached.get(node) is True:
                 return True
     hardware = _hush_hardware_name()
     if not hardware:
@@ -743,9 +903,9 @@ def _hush_chain_muted() -> bool:
     card = _alsa_card(entry)
     if card:
         alsa = _snapshot().setdefault("alsa_cap", {})
-        if card not in alsa:
+        if card not in alsa and not _cache_only():
             alsa[card] = _alsa_capture_muted(card)
-        if alsa[card] is True:
+        if alsa.get(card) is True:
             return True
     return False
 
@@ -915,6 +1075,15 @@ def paint_endpoint(ctx: ActionContext, kind: str, mode: str = "switch") -> None:
     muted = endpoint_muted(kind, name, entry) if name else True
     current = default_sink() if kind == "sink" else default_source()
 
+    if not available and not _pulse_known():
+        # Pulse did not answer. The device is not known to be unplugged or muted.
+        ctx.set_state("")
+        if ctx.slot_title.strip():
+            ctx.set_title(None)
+        else:
+            ctx.set_title(_device_label(kind, chosen or name, items, settings) if (chosen or name) else ("Output" if kind == "sink" else "Mic"))
+        return
+
     if not available:
         ctx.set_state("danger")
         if ctx.slot_title.strip():
@@ -961,7 +1130,8 @@ class _LiveAction(Action):
             _LiveAction._shared = QTimer()
             _LiveAction._shared.timeout.connect(_LiveAction._tick_all)
             _LiveAction._shared.start(400)
-        self._tick()
+        self._paint_one()
+        _schedule_refresh()
 
     def will_disappear(self, ctx: ActionContext) -> None:
         if self in _LiveAction._listeners:
@@ -972,13 +1142,29 @@ class _LiveAction(Action):
 
     def settings_did_change(self, ctx: ActionContext) -> None:
         self._ctx = ctx
-        self._tick()
+        self._paint_one()
+        _schedule_refresh()
+
+    def _paint_one(self) -> None:
+        _cache_state.on = True
+        try:
+            self._tick()
+        finally:
+            _cache_state.on = False
+
+    @classmethod
+    def _paint_cached(cls) -> None:
+        _cache_state.on = True
+        try:
+            for action in list(cls._listeners):
+                action._tick()
+        finally:
+            _cache_state.on = False
 
     @classmethod
     def _tick_all(cls) -> None:
-        _snapshot(force=True)
-        for action in list(cls._listeners):
-            action._tick()
+        _schedule_refresh()
+        cls._paint_cached()
 
     def _tick(self) -> None:
         if self._ctx is None:
@@ -1606,6 +1792,8 @@ def _source_output_apps(source_name: str) -> list[str]:
         )
         # Pulse JSON may put source index elsewhere; fall back to matching via short list
         apps.append(src.lower())
+    if _cache_only():
+        return apps
     # Prefer short list mapping output -> source name when available
     _, short = _pactl("list", "short", "source-outputs")
     named: list[str] = []
@@ -1728,15 +1916,32 @@ class MicCheckAction(Action):
         ctx = self._ctx
         if ctx is None:
             return
-        source = self._resolve_source(ctx)
-        if source != self._source:
-            self._source = source
-            self._sampler.set_source(source)
-        entry = _find_device("source", source) if source else None
-        muted = endpoint_muted("source", source, entry) if source else True
-        peak = 0.0 if muted or not source else self._sampler.peak()
-        app_label, match_blob = _focused_app_label()
-        capturing = bool(source) and _focused_app_using_mic(source, match_blob)
+        _cache_state.on = True
+        try:
+            known = _pulse_known()
+            source = self._resolve_source(ctx) if known else ""
+            if source != self._source:
+                self._source = source
+                self._sampler.set_source(source)
+            entry = _find_device("source", source) if source else None
+            muted = endpoint_muted("source", source, entry) if source else True
+            peak = 0.0 if muted or not source else self._sampler.peak()
+            if known:
+                app_label, match_blob = _focused_app_label()
+                capturing = bool(source) and _focused_app_using_mic(source, match_blob)
+            else:
+                app_label, capturing = "", False
+        finally:
+            _cache_state.on = False
+        _schedule_refresh()
+        if not known:
+            ctx.set_state("")
+            if ctx.slot_title.strip():
+                ctx.set_title(None)
+            else:
+                ctx.set_title("MIC")
+            ctx.set_image(None)
+            return
         if muted:
             ctx.set_state("danger")
         elif capturing and peak > 0.02:
