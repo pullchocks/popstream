@@ -551,6 +551,18 @@ def icon_pixmap(kind: str, size: int = 72, color: str | None = None) -> QPixmap:
         painter.setBrush(accent)
         painter.drawEllipse(box.adjusted(box.width() * 0.18, box.height() * 0.18, -box.width() * 0.18, -box.height() * 0.18))
         painter.setBrush(Qt.BrushStyle.NoBrush)
+    elif k == "nuke":
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(accent)
+        for start in (70, 190, 310):
+            painter.drawPie(box, int(start * 16), int(48 * 16))
+        core = min(box.width(), box.height()) * 0.28
+        painter.setBrush(QColor("#141414"))
+        painter.drawEllipse(QRectF(box.center().x() - core / 2, box.center().y() - core / 2, core, core))
+        dot = core * 0.46
+        painter.setBrush(accent)
+        painter.drawEllipse(QRectF(box.center().x() - dot / 2, box.center().y() - dot / 2, dot, dot))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
     else:
         # grid
         cell = box.width() / 3.6

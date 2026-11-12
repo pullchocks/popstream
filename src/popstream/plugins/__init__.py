@@ -6,6 +6,7 @@ from popstream.plugins.bloop import BloopPlugin
 from popstream.plugins.cliamp import CliampPlugin
 from popstream.plugins.clock import ClockPlugin
 from popstream.plugins.navigation import NavigationPlugin
+from popstream.plugins.nuke import NukePlugin
 from popstream.plugins.nudge import NudgePlugin
 from popstream.plugins.steam import SteamPlugin
 from popstream.plugins.system import SystemPlugin
@@ -23,5 +24,6 @@ def builtin_plugins():
         BloopPlugin(),
         CliampPlugin(),
         NudgePlugin(),
+        NukePlugin(),
         SteamPlugin(),
     ]
